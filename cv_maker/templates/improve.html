@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% from "_macros.html" import cv_paper with context %}
+{% block title %}Improve v{{ state.version }} — {{ run.title or 'Job' }} — CV Tailor{% endblock %}
+{% block crumbs %}
+  <nav class="crumbs" aria-label="You are here"><a href="{{ url_for('jobs') }}">Jobs</a><span aria-hidden="true">›</span>
+    <a href="{{ url_for('run_detail', run_id=run.id) }}">{{ run.title or 'Job' }}</a><span aria-hidden="true">›</span><span>Improve v{{ state.version }}</span></nav>
+{% endblock %}
+{% macro role_select(name, chosen) -%}
+  <select name="{{ name }}" id="{{ name }}" class="select-sm">
+    <option value="">Pick the role…</option>
+    {% for e in roles %}<option value="{{ loop.index0 }}" {{ 'selected' if chosen == loop.index0 }}>{{ e.title }} — {{ e.company }}</option>{% endfor %}
+  </select>
+{%- endmacro %}
+{% block content %}
+  {% set checked = (state.plan or {}).get('checked') %}
+  <div class="page-head">
+    <div>
+      <h1>Improve v{{ state.version }}'s ATS score</h1>
+      <p class="lead">{% if base and base.ats %}It scored {{ base.ats.score }} ({{ base.ats.grade|lower }}). {% endif %}Your answers go into your profile as confirmed facts, then v{{ next_version }} is written from them and checked again. Leave anything you don't know empty: nothing is ever made up.</p>
+    </div>
+  </div>
+
+  {% if state.status == 'checking' %}
+    <div class="panel" id="improve-wait" data-run="{{ run.id }}">
+      <p><span class="spinner" aria-hidden="true"></span> Checking your {{ state.picked|length }} pick{{ 's' if state.picked|length != 1 }} against your profile (one LLM request). The nerdbar shows it.</p>
+      <p class="small muted mt-xs">It works out which can be fixed from your profile as it is and which need facts only you have, and words a question for each of those.</p>
+      <ul class="dot-list small mt-sm">{% for i in state.picked %}<li>{{ i.label }} <span class="faint">· {{ i.detail }}</span></li>{% endfor %}</ul>
+      <form method="post" action="{{ url_for('improve_cancel', run_id=run.id) }}" class="mt-md"><button type="submit" class="ghost sm">Cancel</button></form>
+    </div>
+  {% else %}
+    {% if state.error %}
+      <div class="sec-note error" role="alert">The LLM couldn't check your picks ({{ state.error }}). These are the standard questions, which work just as well.
+        <form method="post" action="{{ url_for('improve_again', run_id=run.id) }}" class="inline-form"><button type="submit" class="link-btn small">Check again with the LLM</button></form></div>
+    {% endif %}
+    <form method="post" id="improve-form" autocomplete="off">
+      {% set ns = namespace(n=0) %}
+      {% for item in state.plan['items'] %}
+        <section class="card improve-item">
+          <header class="card-head">
+            <h2>{{ item.label }}{% if item.group in ('must', 'nice', 'context') %} <span class="small faint">· {{ {'must': 'must-have keyword', 'nice': 'nice-to-have keyword', 'context': 'shown in a role'}[item.group] }}</span>{% endif %}</h2>
+            <span class="state st-{{ {'fixable': 'ok', 'ask': 'attn', 'unlikely': 'bad'}[item.verdict] }}">{{ {'fixable': 'Fixable from your profile', 'ask': 'Needs you', 'unlikely': 'No sign of it in your profile'}[item.verdict] }}</span>
+          </header>
+          {% if item.why %}<p class="small muted">{{ item.why }}</p>{% endif %}
+          {% for q in item.questions %}
+            {% set name = 'q' ~ ns.n %}{% set ns.n = ns.n + 1 %}
+            <div class="improve-q" data-kind="{{ q.kind }}">
+              {% if q.kind == 'bullet' %}
+                <label for="{{ name }}"><strong>{{ q.ask }}</strong> <span class="faint">· {{ roles[q.role].title }} at {{ roles[q.role].company }}</span></label>
+                <textarea id="{{ name }}" name="{{ name }}" rows="2" maxlength="400">{{ q.text }}</textarea>
+                <p class="hint">Edit it to add the number; leave it as it is to skip.</p>
+              {% elif q.kind == 'keyword' %}
+                <p><strong>{{ q.ask }}</strong></p>
+                <div class="choice levels mt-xs" role="radiogroup" aria-label="Your level with {{ q.term }}">
+                  {% for value, label in [('none', 'No experience'), ('beginner', 'Beginner'), ('intermediate', 'Intermediate'), ('expert', 'Expert'), ('skip', 'Skip')] %}
+                    <label><input type="radio" name="{{ name }}_level" value="{{ value }}" {{ 'checked' if value == 'skip' }}>{{ label }}</label>
+                  {% endfor %}
+                </div>
+                <div class="where mt-sm" data-needs-level>
+                  <label for="{{ name }}_role">Where did you use it? <span class="faint">Optional: a line in that role shows it in context, which ranks higher.</span></label>
+                  <div class="row">{{ role_select(name ~ '_role', q.role) }}
+                    <input type="text" name="{{ name }}_text" maxlength="400" placeholder="What you did with {{ q.term }}, in a line" style="flex: 1 1 260px; width: auto;"></div>
+                </div>
+              {% elif q.kind == 'where' %}
+                <label for="{{ name }}_role"><strong>{{ q.ask }}</strong></label>
+                <div class="row">{{ role_select(name ~ '_role', q.role) }}
+                  <input type="text" name="{{ name }}_text" maxlength="400" placeholder="What you did with {{ q.term }}, in a line" style="flex: 1 1 260px; width: auto;"></div>
+              {% elif q.kind == 'add_bullet' %}
+                <label for="{{ name }}"><strong>{{ q.ask }}</strong></label>
+                <input type="text" id="{{ name }}" name="{{ name }}" maxlength="400" placeholder="An achievement, ideally with a number">
+              {% elif q.kind == 'dates' %}
+                <p><strong>{{ q.ask }}</strong></p>
+                <div class="row mt-xs">
+                  <input type="text" name="{{ name }}_start" placeholder="Start, e.g. Mar 2021" style="width: 180px;" aria-label="Start">
+                  <input type="text" name="{{ name }}_end" placeholder="End" style="width: 180px;" aria-label="End">
+                  <label class="check small"><input type="checkbox" name="{{ name }}_current" value="1"> I work here now</label>
+                </div>
+              {% elif q.kind == 'contact' %}
+                <p><strong>{{ q.ask }}</strong></p>
+                <div class="grid-2 mt-xs">
+                  <div class="field"><label for="{{ name }}_email">Email</label><input type="text" id="{{ name }}_email" name="{{ name }}_email" value="{{ profile.email if profile else '' }}"></div>
+                  <div class="field"><label for="{{ name }}_phone">Phone</label><input type="text" id="{{ name }}_phone" name="{{ name }}_phone" value="{{ profile.phone if profile else '' }}"></div>
+                </div>
+              {% elif q.kind == 'education' %}
+                <p><strong>{{ q.ask }}</strong></p>
+                <div class="grid-2 mt-xs">
+                  {% for key, label, hint in [('credential', 'Qualification', 'e.g. BSc'), ('field', 'Field', 'e.g. Computer Science'), ('school', 'Where', ''), ('dates', 'When', 'e.g. 2014 – 2017')] %}
+                    <div class="field"><label for="{{ name }}_{{ key }}">{{ label }}</label><input type="text" id="{{ name }}_{{ key }}" name="{{ name }}_{{ key }}" placeholder="{{ hint }}"></div>
+                  {% endfor %}
+                </div>
+              {% elif q.kind == 'length' %}
+                <label class="check"><input type="checkbox" name="{{ name }}" value="tighter" checked> {{ q.ask }} <span class="faint">Shorter bullets, nothing repeated.</span></label>
+              {% endif %}
+            </div>
+          {% endfor %}
+          {% if not item.questions %}<p class="small ok-text mt-xs">Nothing to ask: the next version does this.</p>{% endif %}
+        </section>
+      {% endfor %}
+
+      <div class="panel mt-md">
+        <label class="check"><input type="checkbox" name="generate_letter" value="1" {{ 'checked' if base and base.letter }}> Also write a cover letter{% if base and base.letter %} (v{{ state.version }} has one){% endif %}</label>
+        <div class="row mt-md">
+          <button type="submit" data-busy-text="Saving…">Add to my profile and write v{{ next_version }}</button>
+          <button type="submit" class="ghost" formaction="{{ url_for('improve_cancel', run_id=run.id) }}">Cancel</button>
+          <span class="small faint">{{ 'Checked by the LLM against your profile.' if checked else 'Standard questions (not checked by the LLM).' }}</span>
+        </div>
+      </div>
+    </form>
+  {% endif %}
+{% endblock %}
+
+{% block dock_label %}The version you're improving{% endblock %}
+{% block dock %}
+<div id="improve-dock">
+  <div class="dock-head">
+    <h2 class="dock-title">v{{ state.version }}</h2>
+    {% if base and base.ats %}<span class="ats-chip ats-{{ base.ats.grade|lower }}">ATS {{ base.ats.score }} · {{ base.ats.grade }}</span>{% endif %}
+    <span class="small faint">what you're improving · <a href="{{ url_for('run_detail', run_id=run.id) }}">back to the job</a></span>
+  </div>
+  {% if base and base.draft %}
+    {{ cv_paper(base.draft, base.rewrites or []) }}
+  {% else %}
+    <p class="dock-empty">No preview for v{{ state.version }}.</p>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    // While your picks are checked: wait for the questions, then show them.
+    var wait = document.getElementById('improve-wait');
+    if (wait) CV.poll('/api/runs?ids=' + wait.dataset.run, function (d) {
+      var run = d.runs[wait.dataset.run];
+      if (!run || (run.busy || []).indexOf('improve') === -1) { location.reload(); return false; }
+      return true;
+    });
+    // "Where did you use it?" matters once you say you have the skill.
+    document.querySelectorAll('.improve-q[data-kind=keyword]').forEach(function (q) {
+      var where = q.querySelector('[data-needs-level]');
+      var sync = function () {
+        var picked = q.querySelector('input[type=radio]:checked');
+        where.hidden = !picked || ['beginner', 'intermediate', 'expert'].indexOf(picked.value) === -1;
+      };
+      q.addEventListener('change', sync); sync();
+    });
+  })();
+</script>
+{% endblock %}

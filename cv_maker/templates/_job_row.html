@@ -1,0 +1,17 @@
+{% from "_macros.html" import status_pill, next_action, host with context %}
+{% set run = row.run %}
+<tr id="job-{{ run.id }}" data-version="{{ run.updated_at }}" data-status="{{ run.status }}" data-busy="{{ (row.busy or [])|join(',') }}" tabindex="0"
+    title="Show in the overview on the right (or open it from its title)">
+  <td class="check-cell"><input type="checkbox" name="run_id" value="{{ run.id }}" class="row-check" aria-label="Select {{ row.label }}"></td>
+  <td>
+    <a href="{{ url_for('run_detail', run_id=run.id) }}" class="row-title break">{{ row.label|truncate(80, True) }}</a>
+    <div class="small muted">{{ run.company or '' }}{% if run.company and run.job_url %} · {% endif %}{% if run.job_url %}{{ host(run.job_url) }}{% elif not run.company %}pasted{% endif %}</div>
+  </td>
+  <td>{{ status_pill(run) }}{% if row.applied %}<div class="small ok-text">Applied</div>{% endif %}
+    {% for kind in row.busy or [] %}<div class="busy-note"><span class="spinner" aria-hidden="true"></span>{{ {'prep': 'prep notes', 'research': 'company research', 'scan': 'checking the application', 'reviews': 'summarising reviews', 'improve': 'checking improvements'}.get(kind, kind) }}</div>{% endfor %}
+    {% set p = row.progress %}{% if p %}<div class="mini-bar {{ p.state }}" role="progressbar" aria-label="Progress" aria-valuemin="0" aria-valuemax="100"
+      aria-valuenow="{{ p.percent }}" aria-valuetext="Step {{ p.number }} of {{ p.total }}: {{ p.current }}" title="Step {{ p.number }} of {{ p.total }}: {{ p.current }}"><span style="width: {{ p.percent }}%"></span></div>{% endif %}</td>
+  <td class="small">{{ next_action(run, row.versions, compact=True) }}{% if row.ats is not none and run.status == 'ready' %}
+    <a href="{{ url_for('run_detail', run_id=run.id) }}" class="ats-chip ats-{{ 'good' if row.ats >= 70 else 'fair' if row.ats >= 50 else 'weak' }} mt-xs" title="ATS match of the latest version">ATS {{ row.ats }}</a>{% endif %}</td>
+  <td class="small faint nowrap">{{ run.updated_at|when }}</td>
+</tr>

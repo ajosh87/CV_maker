@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Check before sending — CV Tailor{% endblock %}
+{% block content %}
+  <a href="{{ url_for('profile') }}" class="back">← Profile</a>
+  <div class="page-head">
+    <div>
+      <h1>Check before sending</h1>
+      <p class="lead">
+        {% if local_llm %}Your LLM runs on this computer, so nothing leaves it either way.
+        {% else %}<strong>{{ upload.filename }}</strong> is about to be sent to {{ model_name }} to build your profile.{% endif %}
+        The details ticked below are swapped for placeholders before sending and put back on this computer when the answer comes back.
+      </p>
+    </div>
+  </div>
+
+  {% if upload.status == 'failed' and upload.error %}
+    <p class="flash error" role="alert">The last attempt failed: {{ upload.error }}</p>
+  {% endif %}
+
+  {% set hidden_count = req['items']|selectattr('hidden')|list|length %}
+  <form method="post" action="{{ url_for('review_upload', upload_id=upload.id) }}" class="panel" id="review-form" data-part="quiet" data-inline>
+    <input type="hidden" name="items_shown" value="1">
+    <h2>Hidden from the LLM <span class="faint small">{{ hidden_count }} of {{ req['items']|length }}</span></h2>
+    {% if req['items'] %}
+      <ul class="hide-list">
+        {% for item in req['items'] %}
+          <li>
+            <label class="check">
+              <input type="checkbox" name="hide" value="{{ loop.index0 }}" {{ 'checked' if item.hidden }}>
+              <span class="kind">{{ kind_labels[item.kind] }}</span>
+              <span class="break">{{ item.text|replace('\n', ' ') }}</span>
+            </label>
+          </li>
+        {% endfor %}
+      </ul>
+      <p class="hint">Untick anything you're happy to send as it is.</p>
+    {% else %}
+      <p class="small muted">Nothing personal was found automatically. Add anything you want hidden below.</p>
+    {% endif %}
+
+    <div class="field mt-md">
+      <label for="also">Also hide (one per line)</label>
+      <textarea id="also" name="also" rows="2" placeholder="e.g. your street address, a referee's name"></textarea>
+      <p class="hint">Found however it's capitalised or spaced. To hide words from every request, add them in <a href="{{ url_for('settings') }}#privacy">Settings</a>.</p>
+    </div>
+
+    {% if req['left_out'] %}
+      <input type="hidden" name="unused_shown" value="1">
+      <label class="check"><input type="checkbox" name="leave_out" value="1" {{ '' if upload.keep_unused else 'checked' }}>
+        Leave out what the app doesn't use: {{ req['left_out']|join(', ') }}</label>
+    {% endif %}
+
+    <div class="row mt-md">
+      <button type="submit" name="action" value="send" data-inline="off">Send to the LLM</button>
+      <button type="submit" name="action" value="preview" class="secondary" data-busy-text="Updating…">Update preview</button>
+      <button type="submit" class="ghost push-right" data-inline="off" formaction="{{ url_for('delete_upload', upload_id=upload.id) }}"
+              data-confirm="Delete {{ upload.filename }} without sending it?">Cancel</button>
+    </div>
+  </form>
+
+{% endblock %}
+{% block dock_label %}What the LLM receives{% endblock %}
+{% block dock %}
+  <section id="preview" data-part="quiet">
+    <div class="dock-head"><h2 class="dock-title">What the LLM receives</h2></div>
+    <p class="small muted">Your CV text exactly as it will be sent, placeholders highlighted. The app adds its reading instructions around it.</p>
+    <div class="jd-text sent-text">{{ req['preview']|placeholders }}</div>
+  </section>
+{% endblock %}

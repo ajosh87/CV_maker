@@ -1,0 +1,35 @@
+{% from "_macros.html" import cv_paper with context %}
+{#- One document, for the right half of Documents (and the CV you uploaded, in the profile editor). -#}
+<div class="doc-preview">
+  {% if upload %}
+    <div class="dock-head">
+      <h2 class="dock-title break">{{ upload.filename }}</h2>
+      <span class="small faint push-right">Source CV · {{ upload.created_at|when }}</span>
+    </div>
+    <div class="row mb-md">
+      <a href="{{ url_for('download_upload', upload_id=upload.id) }}" class="btn secondary sm">Download</a>
+      <span class="small faint">The text read from it, on this computer: {{ '{:,}'.format(upload.text|length) }} characters.</span>
+    </div>
+    <div class="jd-text dock-jd">{{ upload.text }}</div>
+  {% else %}
+    <div class="dock-head">
+      <h2 class="dock-title">{{ 'Cover letter' if doc.kind == 'letter' else 'CV' }} <span class="mono">v{{ doc.version }}</span></h2>
+      <span class="small faint">{{ run.title or 'Job' }}{% if run.company %} · {{ run.company }}{% endif %}</span>
+      {% if doc.kind == 'cv' and v.ats %}<span class="ats-chip ats-{{ v.ats.grade|lower }} push-right">ATS {{ v.ats.score }} · {{ v.ats.grade }}</span>{% endif %}
+    </div>
+    <div class="row mb-md">
+      <a href="{{ url_for('download_document', doc_id=doc.id) }}" class="btn secondary sm">Download</a>
+      <a href="{{ url_for('run_detail', run_id=run.id) }}" class="btn ghost sm">Open the job →</a>
+      <span class="small faint">{{ doc.created_at|when }}</span>
+    </div>
+    {% if doc.kind == 'letter' %}
+      {% if v.letter_text %}<div class="paper letter">{% for para in v.letter_text.split('\n\n') %}<p>{{ para }}</p>{% endfor %}</div>
+      {% else %}<p class="dock-empty">No preview for this letter (it was written before previews existed). Download it to read it.</p>{% endif %}
+    {% elif v.draft %}
+      <label class="check small"><input type="checkbox" class="orig-toggle"> Show my original wording next to each rewritten bullet</label>
+      {{ cv_paper(v.draft, v.rewrites or []) }}
+    {% else %}
+      <p class="dock-empty">No preview for this version (it was made before previews existed). Download it to read it.</p>
+    {% endif %}
+  {% endif %}
+</div>

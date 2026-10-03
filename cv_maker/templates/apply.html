@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Applying — {{ run.title if run else 'Job' }} — CV Tailor{% endblock %}
+{% block crumbs %}
+  <nav class="crumbs" aria-label="You are here"><a href="{{ url_for('jobs') }}">Jobs</a><span aria-hidden="true">›</span>
+    {% if run %}<a href="{{ url_for('run_detail', run_id=run.id) }}">{{ run.title or 'Job' }}</a><span aria-hidden="true">›</span>{% endif %}<span>Applying</span></nav>
+{% endblock %}
+{% block content %}
+  <div class="page-head">
+    <div>
+      <h1>Applying{% if run and run.title %}: {{ run.title }}{% endif %}</h1>
+      <p class="lead">{% if run and run.company %}{{ run.company }} · {% endif %}attaching CV v{{ application.version }} · started {{ application.created_at|when }}
+        · <a href="{{ url_for('apply_details_page', next=request.path) }}" class="small">saved answers and accounts</a>
+        · <a href="{{ url_for('log_page', ref=application.id[:6], next=request.path) }}" class="small">log</a></p>
+    </div>
+  </div>
+
+  <ol class="stepper four" id="ap-steps" aria-label="Application progress"></ol>
+  <p class="small muted mb-md" id="ap-step-detail" aria-live="polite"></p>
+
+  <div id="ap" data-id="{{ application.id }}" data-width="{{ viewport.width }}" data-height="{{ viewport.height }}"
+       data-job="{{ url_for('run_detail', run_id=run.id) if run else url_for('jobs') }}">
+    <div class="panel needs" id="ap-needs" hidden role="region" aria-live="polite"></div>
+
+    <section class="mt-lg">
+      <h2>Filled so far <span class="faint small" id="ap-filled-count"></span></h2>
+      <p class="small muted">Everything entered in this application, kept on this computer so you can check it before submitting.</p>
+      <div class="table-wrap mt-sm">
+        <table class="table small"><thead><tr><th>Page</th><th>Field</th><th>Entered</th><th>By</th></tr></thead><tbody id="ap-filled"></tbody></table>
+      </div>
+    </section>
+  </div>
+{% endblock %}
+
+{% block dock_label %}The assistant's browser{% endblock %}
+{% block dock %}
+<div class="browser" id="ap-browser">
+  <div class="drive-bar">
+    <span class="drive-mode" id="ap-mode">Connecting…</span>
+    <span class="row push-right">
+      <button type="button" class="sm" id="ap-pause" hidden title="Stop the assistant where it is and use the page yourself">Take over</button>
+      <button type="button" class="sm" id="ap-resume" hidden>Let the assistant continue</button>
+      <button type="button" class="sm" id="ap-start" hidden>Resume from the last page</button>
+      <button type="button" class="ghost sm" id="ap-stop" hidden data-confirm="Stop the assistant? You can resume later from the last page.">Stop</button>
+    </span>
+  </div>
+  <div class="browser-bar">
+    <button type="button" class="nav-btn" data-nav="back" title="Back" aria-label="Back">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3 5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    <button type="button" class="nav-btn" data-nav="forward" title="Forward" aria-label="Forward">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    <button type="button" class="nav-btn" data-nav="reload" title="Reload" aria-label="Reload">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5V5h-2.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    <form class="addr" id="ap-go">
+      <label for="ap-url" class="sr-only">Address</label>
+      <input type="text" id="ap-url" value="{{ application.current_url or application.start_url }}" spellcheck="false" autocomplete="off">
+      <button type="submit" class="secondary sm">Go</button>
+    </form>
+  </div>
+  <div class="live" id="ap-live" tabindex="0" aria-label="Live view of the assistant's browser. When you're driving, click and type here.">
+    <img id="ap-frame" alt="" width="{{ viewport.width }}" height="{{ viewport.height }}">
+    <div class="live-target" id="ap-target" hidden></div>
+    <div class="live-badge" id="ap-badge">Connecting…</div>
+  </div>
+  <div class="row mt-sm" id="ap-typebar" hidden>
+    <input type="text" id="ap-text" placeholder="Type or paste text for the field you clicked" style="flex: 1 1 220px; width: auto;">
+    <button type="button" class="secondary sm" id="ap-send">Send text</button>
+    <button type="button" class="ghost sm" data-key="Tab">Tab</button>
+    <button type="button" class="ghost sm" data-key="Enter">Enter</button>
+  </div>
+  <p class="small faint mt-sm" id="ap-help">The assistant drives; press <strong>Take over</strong> any time to use the page yourself: click, scroll and type straight into the view, or use Back, Reload and the address bar. It notices when you're past LinkedIn's Apply, a sign-in or a CAPTCHA and carries on by itself.</p>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='apply.js') }}"></script>{% endblock %}

@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — CV Tailor{% endblock %}
+{% block content %}
+  <h1>{{ title }}</h1>
+  <p class="lead mt-sm">{{ message }}</p>
+  <p class="mt-md">{% if link %}<a href="{{ link[0] }}">{{ link[1] }}</a> · {% endif %}<a href="{{ url_for('jobs') }}">Go to your jobs</a></p>
+{% endblock %}

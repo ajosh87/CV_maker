@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block title %}Questions — {{ run.title or 'Job' }} — CV Tailor{% endblock %}
+{% block content %}
+  <a href="{{ url_for('run_detail', run_id=run.id) }}" class="back">← {{ run.title or 'Job' }}</a>
+  <div class="page-head">
+    <div>
+      <h1>{% if regenerating %}New version{% else %}A few questions{% endif %}</h1>
+      <p class="lead">
+        {{ run.title or 'This job' }}{% if run.company %} at {{ run.company }}{% endif %}{% if position %} · job {{ position[0] }} of {{ position[1] }}{% endif %}.
+        {% if regenerating %}Change any answer and write v{{ next_version }}; earlier versions are kept.{% endif %}
+      </p>
+      {% if position %}
+        <div class="progress-bar slim mt-sm" role="progressbar" aria-label="Jobs answered in this batch" aria-valuemin="0" aria-valuemax="{{ position[1] }}"
+             aria-valuenow="{{ position[0] - 1 }}" title="{{ position[0] - 1 }} of {{ position[1] }} answered"><span style="width: {{ (100 * (position[0] - 1) / position[1])|round|int }}%"></span></div>
+      {% endif %}
+    </div>
+  </div>
+
+  {% set covered = run.gaps|selectattr('status', 'equalto', 'covered')|map(attribute='term')|list %}
+  {% if run.gaps %}
+    <p class="small muted">Your profile already shows {{ covered|length }} of {{ run.gaps|length }} requirements clearly{% if covered %} ({{ covered|join(', ') }}){% endif %}. <a href="{{ url_for('run_detail', run_id=run.id) }}#based-on">See the evidence for each</a></p>
+  {% endif %}
+
+  <form method="post" class="mt-md" id="answers">
+    {% if run.questions %}
+      <p class="small muted" style="margin-bottom: 12px;">
+        Pick your real level for each: it decides how the CV and letter word the skill.
+        <strong>Beginner</strong> reads as “familiar with”, <strong>Intermediate</strong> as “working knowledge of”,
+        <strong>Expert</strong> as “expert in”, and it's never described above that. A level adds the skill to your
+        profile (you can change it there). <strong>No experience</strong> keeps it off this CV; <strong>Skip</strong> decides nothing.
+      </p>
+      {% set ns = namespace(optional_open=false) %}
+      {% for q in run.questions %}
+        {% set i = loop.index0 %}
+        {% set prev = previous.get(q.term, {}) %}
+        {% set choice = prev.get('choice', 'skip') %}
+        {% if q.optional and not ns.optional_open %}
+          {% set ns.optional_open = true %}
+          <details class="acc mt-md" data-key="optional-questions" {{ 'open' if previous }}>
+            <summary>Optional: your level for skills your profile already shows <span class="count">{{ run.questions|selectattr('optional')|list|length }}</span></summary>
+            <div class="acc-body"><p class="small muted" style="margin-bottom: 10px;">These are in your profile, but with little to show for them. A level only sharpens how the CV words them; skipping changes nothing.</p>
+        {% endif %}
+        <fieldset class="panel question" data-q="{{ i }}">
+          <legend class="sr-only">{{ q.prompt }}</legend>
+          <p aria-hidden="true" class="q-text">{{ q.prompt }}
+            <span class="tag {{ 'must' if q.required else 'nice' }}">{{ 'must-have' if q.required else 'nice to have' }}</span></p>
+          <div class="choice levels mt-sm">
+            {% for value, label in [('none', 'No experience'), ('beginner', 'Beginner'), ('intermediate', 'Intermediate'), ('expert', 'Expert'), ('skip', 'Skip')] %}
+              <label><input type="radio" name="answer_{{ i }}" value="{{ value }}" {% if choice == value %}checked{% endif %}>{{ label }}</label>
+            {% endfor %}
+          </div>
+          <div class="detail mt-sm">
+            <label for="detail_{{ i }}">Where or how? <span class="faint">Optional. Your CV can use it as a confirmed fact.</span></label>
+            <input type="text" id="detail_{{ i }}" name="detail_{{ i }}" value="{{ prev.get('detail', '') }}" maxlength="600" placeholder="e.g. Ran our production clusters at Northwind, 2022–2024">
+          </div>
+        </fieldset>
+        {% if loop.last and ns.optional_open %}</div></details>{% endif %}
+      {% endfor %}
+    {% else %}
+      <div class="panel"><p>Nothing to ask: your profile covers every requirement the posting lists.</p></div>
+    {% endif %}
+
+    <label class="check mt-md"><input type="checkbox" name="generate_letter" value="1" {% if run.generate_letter %}checked{% endif %}> Also write a cover letter</label>
+    {% if alongside.possible %}
+      <label class="check mt-sm"><input type="checkbox" name="apply_alongside" value="1" {{ 'checked' if alongside.default and not alongside.busy }} {{ 'disabled' if alongside.busy }}>
+        Fill in the application on {{ alongside.site }} while the CV is being written</label>
+      <p class="hint" style="margin-left: 24px;">Saves time: the assistant starts now, fills in everything that doesn't need the CV, and attaches it as soon as it's written. It still stops when it isn't sure, and you approve the submit.
+        {% if alongside.busy %}Another application is in progress, so this one can't start alongside.{% endif %}</p>
+    {% elif alongside.why_not %}
+      <p class="hint mt-sm">Filling in the application alongside isn't available here: {{ alongside.why_not }}</p>
+    {% endif %}
+    <div class="row mt-md">
+      <button type="submit">{{ 'Write v' ~ next_version if regenerating else 'Write tailored CV' }}</button>
+      <a href="{{ url_for('run_detail', run_id=run.id) }}" class="btn ghost">Cancel</a>
+    </div>
+  </form>
+{% endblock %}
+{% block dock_label %}The posting{% endblock %}
+{% block dock %}
+<div id="q-dock">
+  <div class="dock-head">
+    <h2 class="dock-title">The posting</h2>
+    <span class="small faint">Each question's skill is marked. Pick a question to see where the posting asks for it and what your profile already shows.</span>
+  </div>
+  {% for q in run.questions %}
+    {% set g = evidence.get(q.term|lower) %}
+    <div class="q-evidence" data-q="{{ loop.index0 }}" {{ 'hidden' if not loop.first }}>
+      <div class="q-ev-head">
+        <strong>{{ q.term }}</strong>
+        <span class="tag {{ 'must' if q.required else 'nice' }}">{{ 'must-have' if q.required else 'nice to have' }}</span>
+        {% if g %}<span class="q-ev-score m-{{ g.strength }}"><span class="m-pill">{{ {'strong': 'Strong', 'partial': 'Partial', 'weak': 'Weak', 'none': 'Not found'}[g.strength] }}</span> <span class="m-score">{{ g.score }}/100</span></span>{% endif %}
+      </div>
+      <p class="small muted mt-xs">What your profile shows for it now:</p>
+      <ul class="evidence q-ev-list">
+        {% for f in (g.found if g else []) %}
+          <li><span class="ev-points">+{{ f.points }}</span><span><strong>{{ f.where }}</strong>: {{ f.why }}{% if f.where not in ('Skills', 'Your answer') and f.text %} — “{{ f.text|truncate(140) }}”{% endif %}</span></li>
+        {% else %}
+          <li><span class="ev-points">0</span><span>Nothing in your profile names it, under any of its names.</span></li>
+        {% endfor %}
+      </ul>
+      <p class="small faint mt-sm">On the CV, <strong>Beginner</strong> reads “familiar with {{ q.term }}”, <strong>Intermediate</strong> “working knowledge of {{ q.term }}”, <strong>Expert</strong> “expert in {{ q.term }}”.</p>
+      <p class="small mt-xs q-ev-jump"><button type="button" class="link-btn small" data-jump="{{ loop.index0 }}">Where the posting says it</button> <span class="faint q-count"></span></p>
+    </div>
+  {% endfor %}
+  {% if run.jd_text %}
+    <div class="jd-text dock-jd mt-md" id="q-posting">{{ run.jd_text|mark_terms(run.questions|map(attribute='term')|list) }}</div>
+  {% else %}
+    <p class="dock-empty">The posting's text isn't available for this job.</p>
+  {% endif %}
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  // The question you're on lights up its skill in the posting on the right, with your profile's evidence for it.
+  (function () {
+    var dock = document.getElementById('q-dock');
+    if (!dock) return;
+    var shown = null, hits = {};
+    dock.querySelectorAll('.q-mark').forEach(function (m) { hits[m.dataset.q] = (hits[m.dataset.q] || 0) + 1; });
+    dock.querySelectorAll('.q-evidence').forEach(function (box) {
+      var n = hits[box.dataset.q] || 0;
+      box.querySelector('.q-count').textContent = n ? '(' + n + '×)' : '';
+      box.querySelector('[data-jump]').hidden = !n;
+      if (!n) box.querySelector('.q-count').textContent = 'The posting names it only in other words.';
+    });
+    function jump(i) {
+      var first = dock.querySelector('.q-mark[data-q="' + i + '"]');
+      if (first) first.scrollIntoView({block: 'center', behavior: 'smooth'});
+    }
+    function pick(i, scroll) {
+      if (shown === i) return;
+      shown = i;
+      dock.querySelectorAll('.q-evidence').forEach(function (box) { box.hidden = box.dataset.q !== i; });
+      dock.querySelectorAll('.q-mark').forEach(function (m) { m.classList.toggle('on', m.dataset.q === i); });
+      document.querySelectorAll('#answers fieldset.question').forEach(function (fs) { fs.classList.toggle('current', fs.dataset.q === i); });
+      if (scroll) jump(i);
+    }
+    document.addEventListener('focusin', function (e) {
+      var fs = e.target.closest && e.target.closest('fieldset.question');
+      if (fs) pick(fs.dataset.q, true);
+    });
+    document.addEventListener('click', function (e) {
+      var j = e.target.closest('[data-jump]');
+      if (j) { jump(j.dataset.jump); return; }
+      var fs = e.target.closest('fieldset.question');
+      if (fs) pick(fs.dataset.q, true);
+      var mark = e.target.closest('.q-mark');
+      if (mark) {
+        pick(mark.dataset.q, false);
+        var target = document.querySelector('fieldset.question[data-q="' + mark.dataset.q + '"]');
+        if (target) target.scrollIntoView({block: 'center', behavior: 'smooth'});
+      }
+    });
+    var first = document.querySelector('#answers fieldset.question');
+    if (first) pick(first.dataset.q, false);
+  })();
+
+  // The detail field is only relevant once a level is picked; without JS it simply stays visible.
+  document.querySelectorAll('#answers fieldset.question').forEach(function (fs) {
+    var detail = fs.querySelector('.detail');
+    var sync = function () {
+      var picked = fs.querySelector('input:checked');
+      detail.hidden = !picked || ['beginner', 'intermediate', 'expert', 'yes'].indexOf(picked.value) === -1;
+    };
+    fs.addEventListener('change', sync); sync();
+  });
+</script>
+{% endblock %}

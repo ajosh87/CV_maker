@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Sent to the LLM — CV Tailor{% endblock %}
+{% block content %}
+  <a href="{{ url_for('settings') }}#privacy" class="back">← Settings</a>
+  <div class="page-head">
+    <div>
+      <h1>Sent to the LLM</h1>
+      <p class="lead">The exact text of the last {{ size }} requests, as the LLM received it. Highlighted placeholders were filled back in on this computer.</p>
+    </div>
+    {% if calls %}
+      <form method="post" action="{{ url_for('clear_sent_log') }}" data-confirm="Clear this record? It only removes the list below.">
+        <button type="submit" class="secondary sm">Clear</button>
+      </form>
+    {% endif %}
+  </div>
+
+  {% for call in calls %}
+    <div class="version sent-call" data-call="{{ loop.index0 }}" tabindex="0">
+      <div class="version-head">
+        <strong>{{ call.purpose }}</strong>
+        <span class="small faint">{{ call.created_at|when }} · {{ '{:,}'.format(call.text|length) }} characters
+          {%- if call.tokens_in is defined %} · {{ '~' if call.estimated }}{{ '{:,}'.format(call.tokens_in) }} tokens in, {{ '~' if call.estimated }}{{ '{:,}'.format(call.tokens_out) }} out · {{ call.seconds }}s{% endif %}
+          {%- if call.failed %} · <span class="error-text">failed</span>{% endif %}</span>
+      </div>
+      <p class="small muted mt-xs">{% if call.hidden %}Hidden: {{ call.hidden|hidden_summary }}.{% else %}Nothing personal found to hide.{% endif %}</p>
+      <details class="sent-inline inline-only">
+        <summary>Show the text here</summary>
+        <div class="jd-text sent-text">{{ call.text|placeholders }}</div>
+      </details>
+    </div>
+  {% else %}
+    <p class="muted">Nothing has been sent yet.</p>
+  {% endfor %}
+{% endblock %}
+{% block dock_label %}The exact text{% endblock %}
+{% block dock %}
+<div id="sent-dock">
+  {% if calls %}
+    <div class="dock-head"><h2 class="dock-title" id="sent-title">{{ calls[0].purpose }}</h2><span class="small faint" id="sent-meta">{{ calls[0].created_at|when }} · {{ '{:,}'.format(calls[0].text|length) }} characters</span></div>
+    <div class="jd-text sent-text dock-jd" id="sent-text">{{ calls[0].text|placeholders }}</div>
+  {% else %}
+    <p class="dock-empty">Nothing has been sent yet. Every request to the LLM appears here exactly as the LLM received it, placeholders highlighted.</p>
+  {% endif %}
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  (function () {
+    var title = document.getElementById('sent-title'), meta = document.getElementById('sent-meta'), text = document.getElementById('sent-text');
+    if (!text) return;
+    function show(call) {
+      document.querySelectorAll('.sent-call').forEach(function (c) { c.classList.toggle('selected', c === call); });
+      title.textContent = call.querySelector('strong').textContent;
+      meta.textContent = call.querySelector('.version-head .small').textContent.replace(/\s+/g, ' ').trim();
+      text.innerHTML = call.querySelector('.sent-text').innerHTML;
+      document.getElementById('dock').scrollTop = 0;
+    }
+    document.addEventListener('click', function (e) {
+      var call = e.target.closest('.sent-call');
+      if (call && !e.target.closest('summary, a, button, .sent-text')) show(call);
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.target.classList && e.target.classList.contains('sent-call') && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); show(e.target); }
+    });
+    var first = document.querySelector('.sent-call');
+    if (first) first.classList.add('selected');
+  })();
+</script>
+{% endblock %}

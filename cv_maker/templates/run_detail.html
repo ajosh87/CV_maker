@@ -1,0 +1,639 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_pill, next_action, host, badge, section_notes, scan_summary, cv_paper with context %}
+{% set page_notes = ['status'] + (['before', 'prep', 'research'] if run.requirements else []) %}{# each part shows the answer to its own buttons #}
+{% block title %}{{ run.title or 'Job' }} — CV Tailor{% endblock %}
+{% block crumbs %}
+  <nav class="crumbs" aria-label="You are here"><a href="{{ url_for('jobs') }}">Jobs</a><span aria-hidden="true">›</span><span>{{ run.title or 'Job' }}</span></nav>
+{% endblock %}
+{% block content %}
+  {% set latest = versions[0] if versions else None %}
+  <div class="page-head">
+    <div>
+      <h1>{{ run.title or ('Pasted job' if not run.job_url else 'Job') }}</h1>
+      <p class="muted mt-xs">
+        {% if run.company %}<a href="{{ url_for('documents', company=run.company) }}" class="plain" title="All documents for {{ run.company }}">{{ run.company }}</a> · {% endif %}
+        added {{ run.created_at|when }}
+        {% if run.job_url %} · <a href="{{ run.job_url }}" target="_blank" rel="noopener noreferrer">posting on {{ host(run.job_url) }} ↗</a>{% endif %}
+        {% if run.archived %} · archived{% endif %}
+      </p>
+    </div>
+  </div>
+
+  {# ---- where this job is, and the one next step ---- #}
+  <div class="panel" id="status" data-part="quiet" data-version="{{ run.updated_at }}" data-status="{{ run.status }}" data-busy="{{ busy|join(',') }}">
+    {% set p = progress %}
+    <ol class="stepper" aria-label="Progress: step {{ p.number }} of {{ p.total }}, {{ p.current }}">
+      {% for s in p.steps %}
+        <li class="st-{{ s.state }}"{% if s.state in ('working', 'you', 'failed') %} aria-current="step"{% endif %}>
+          <span class="dot" aria-hidden="true"></span>
+          <span class="st-label">{{ s.label }}<span class="sr-only">: {{ {'done': 'done', 'working': 'in progress', 'you': 'waiting for you', 'failed': 'failed', 'todo': 'not yet'}[s.state] }}</span></span>
+        </li>
+      {% endfor %}
+    </ol>
+    {{ section_notes('status') }}
+    {% set improving = run.improve or {} %}
+    <div class="status-row">
+      <div class="row">{{ status_pill(run) }}</div>
+      {% if run.status == 'ready' and improving.get('status') in ('checking', 'ready') %}
+        <a href="{{ url_for('improve_page', run_id=run.id) }}" class="btn">{{ 'Answer the improvement questions' if improving.status == 'ready' else 'Checking your picks…' }}</a>
+      {% elif run.status == 'ready' %}
+        <div class="row">
+          {% if latest and latest.improvable %}<button type="button" class="btn" data-preview="{{ latest.version }}" data-tab="ats">Improve the ATS score ({{ latest.ats.score }})</button>{% endif %}
+          <a href="{{ url_for('run_questions', run_id=run.id) }}" class="btn secondary">New version…</a>
+          <a href="#before" class="btn secondary">Apply…</a>
+        </div>
+      {% elif run.status == 'needs_answers' %}
+        <a href="{{ url_for('run_questions', run_id=run.id) }}" class="btn">{{ next_action(run)|striptags|trim }}</a>
+      {% endif %}
+    </div>
+    {% if run.status in ('fetching', 'analyzing', 'generating') %}
+      <p class="mt-sm" aria-live="polite"><span class="spinner" aria-hidden="true"></span> {{ run.step or 'Working…' }}</p>
+    {% elif run.status == 'needs_paste' %}
+      <p class="mt-sm">{{ run.fetch_reason or 'There is no job description yet.' }} Paste it to continue.</p>
+      <form method="post" action="{{ url_for('paste_one', run_id=run.id) }}" class="mt-md" id="paste" data-inline>
+        <label for="jd">Job description</label>
+        <textarea id="jd" name="jd_text" rows="7" placeholder="Copy the description from the posting and paste it here"></textarea>
+        <div class="row mt-sm">
+          <button type="submit" data-busy-text="Saving…">Save and analyze</button>
+          {% if run.job_url %}<button type="submit" class="secondary" formaction="{{ url_for('retry', run_id=run.id) }}">Try fetching again</button>{% endif %}
+        </div>
+      </form>
+    {% elif run.status == 'failed' %}
+      <p class="mt-sm error-text" role="alert">{{ run.error or 'Something went wrong.' }}</p>
+      <div class="row mt-md">
+        <form method="post" action="{{ url_for('retry', run_id=run.id) }}" data-inline><button type="submit" data-busy-text="Retrying…">Retry</button></form>
+        {% if can_answer %}<a href="{{ url_for('run_questions', run_id=run.id) }}" class="btn secondary">Change answers</a>{% endif %}
+        {% if run.failed_stage in ('analyze', 'generate') %}<a href="{{ url_for('settings', next=request.path) }}" class="btn ghost">LLM settings</a>{% endif %}
+        <a href="{{ url_for('log_page', ref=run.id[:6], next=request.path) }}" class="small">What happened (log)</a>
+      </div>
+    {% endif %}
+    {% if run.warning %}<p class="small warn-text mt-sm">{{ run.warning }}</p>{% endif %}
+  </div>
+
+  {% if run.requirements %}
+    <nav class="page-nav mt-md" aria-label="On this page" id="page-nav" data-part="quiet">
+      {% for key, anchor, label in [('match', 'based-on', 'How you match'), ('applying', 'before', 'Applying'), ('prep', 'prep', 'Interview prep'),
+                                    ('research', 'research', 'Company research'), ('posting', 'answers', 'Your answers')]
+         if states.get(key) and (key != 'posting' or answers) %}
+        <a href="#{{ anchor }}" title="{{ states[key].label }}"><i class="nav-dot st-{{ states[key].tone }}" aria-hidden="true"></i>{{ label }}<span class="sr-only">: {{ states[key].label }}</span></a>
+      {% endfor %}
+    </nav>
+  {% endif %}
+
+  {# ---- how your profile matches: the evidence behind every keyword ---- #}
+  {% if gaps %}
+    <section id="based-on" class="card" data-part>
+      <header class="card-head"><h2>How your profile matches</h2>{{ badge(states.match) }}</header>
+      {% set counts = {'strong': 0, 'partial': 0, 'weak': 0, 'none': 0} %}
+      {% for g in gaps %}{% set _ = counts.update({g.strength: counts[g.strength] + 1}) %}{% endfor %}
+      <div class="match-summary">
+        <span class="m-strong"><strong>{{ counts.strong }}</strong> strong</span>
+        <span class="m-partial"><strong>{{ counts.partial }}</strong> partial</span>
+        <span class="m-weak"><strong>{{ counts.weak }}</strong> weak</span>
+        <span class="m-none"><strong>{{ counts.none }}</strong> not found</span>
+      </div>
+      <p class="small muted">Each requirement in the posting, scored 0–100 from where it appears in your profile: your skills list, your roles (recent roles count more), certifications and projects, and the level you gave. Open one to see exactly what counted. Strong ones go on the CV in the posting's own words; weak ones are never claimed.</p>
+      <ul class="match-list mt-sm">
+        {% for g in gaps %}
+          <li class="m-{{ g.strength }}">
+            <details data-key="match-{{ g.term|lower }}">
+              <summary>
+                <span class="m-term">{{ g.term }}<span class="tag {{ 'must' if g.required else 'nice' }}">{{ 'must' if g.required else 'nice' }}</span></span>
+                <span class="m-level">{{ g.level|capitalize if g.level else '' }}</span>
+                <span class="m-bar" aria-hidden="true"><span style="width: {{ g.score }}%"></span></span>
+                <span class="m-score">{{ g.score }}</span>
+                <span class="m-pill">{{ {'strong': 'Strong', 'partial': 'Partial', 'weak': 'Weak', 'none': 'Not found'}[g.strength] }}</span>
+              </summary>
+              <ul class="evidence">
+                {% for f in g.found %}
+                  <li><span class="ev-points">+{{ f.points }}</span><span><strong>{{ f.where }}</strong>: {{ f.why }}{% if f.where not in ('Skills', 'Your answer') and f.text %} — “{{ f.text|truncate(140) }}”{% endif %}</span></li>
+                {% else %}
+                  <li><span class="ev-points">0</span><span>Not in your profile.{% if can_answer %} If you have it, give your level for <a href="{{ url_for('run_questions', run_id=run.id) }}">a new version</a>.{% endif %} Until then it's never claimed.</span></li>
+                {% endfor %}
+              </ul>
+            </details>
+          </li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+
+  {# ---- applying: what the application needs (from the posting, and a read-only look at it), then applying ---- #}
+  {% set scan = run.scan or {} %}
+  {% set notes = (run.requirements or {}).get('notes') or [] %}
+  {% if run.requirements %}
+    <section id="before" class="card" data-part>
+      <header class="card-head"><h2>Applying</h2>{{ badge(states.applying) }}</header>
+      {{ section_notes('before') }}
+      {% if notes %}
+        <div class="sub">
+          <h3 class="sub-title">From the posting</h3>
+          <ul class="dot-list small">{% for n in notes %}<li>{{ n }}</li>{% endfor %}</ul>
+        </div>
+      {% endif %}
+      <div class="sub">
+        <h3 class="sub-title">What the application needs</h3>
+        {% if 'scan' in busy %}
+          <p class="small muted"><span class="spinner" aria-hidden="true"></span> Looking at the application{% if start[0] %} on {{ host(start[0]) }}{% endif %} (read-only, nothing entered)…</p>
+        {% elif scan.get('checked_at') and not scan.get('note') and not scan.get('error') %}
+          <p class="small muted mb-xs">From a look at the application (read-only, nothing entered)</p>
+          {{ scan_summary(scan, saved_sites, latest and latest.letter) }}
+        {% elif scan.get('error') %}
+          <p class="small error-text">{{ scan.error }}</p>
+        {% elif start[1] %}
+          <p class="small muted">{{ start[1] }}</p>
+        {% elif scan.get('note') %}
+          <p class="small muted">{{ scan.note }}</p>
+        {% elif not can_scan %}
+          <p class="small faint">Install the browser engine to have each application checked automatically (see Apply).</p>
+        {% else %}
+          <p class="small muted">Where the application happens, whether it needs an account, what it asks for: a quick read-only look, no LLM tokens.</p>
+        {% endif %}
+        {% if not start[0] %}
+          <form method="post" action="{{ url_for('scan_application', run_id=run.id) }}" class="link-form mt-sm" data-inline>
+            <label for="apply-url" class="small">The company's application link</label>
+            <div class="row">
+              <input type="text" id="apply-url" name="apply_url" placeholder="https://careers.company.com/…" autocomplete="off" spellcheck="false">
+              <button type="submit" class="secondary sm" data-busy-text="Checking…">Check it</button>
+            </div>
+          </form>
+        {% elif can_scan and 'scan' not in busy %}
+          <form method="post" action="{{ url_for('scan_application', run_id=run.id) }}" class="row mt-sm" data-inline>
+            <button type="submit" class="secondary sm" data-busy-text="Checking…">{{ 'Check again' if scan.get('checked_at') else 'Check what the application needs' }}</button>
+            <span class="small faint">Read-only, no LLM tokens.</span>
+          </form>
+          <details class="inline-details mt-xs" data-key="other-link">
+            <summary class="small">Use a different application link</summary>
+            <form method="post" action="{{ url_for('scan_application', run_id=run.id) }}" class="link-form mt-xs" data-inline>
+              <label for="apply-url" class="sr-only">The company's application link</label>
+              <div class="row">
+                <input type="text" id="apply-url" name="apply_url" placeholder="https://careers.company.com/…" autocomplete="off" spellcheck="false">
+                <button type="submit" class="secondary sm" data-busy-text="Checking…">Check it</button>
+              </div>
+            </form>
+          </details>
+        {% endif %}
+      </div>
+
+      <div class="sub" id="apply">
+        <h3 class="sub-title">Apply</h3>
+        {% set last = applications[-1] if applications else None %}
+        {% if not versions %}
+          <p class="small faint">Once a CV is written, apply yourself with it or let the assistant fill in the application.</p>
+        {% elif last and last.status == 'submitted' %}
+          <p><span class="pill ready">Applied</span> <span class="small muted">{{ last.submitted_at|when }} · CV v{{ last.version }}{{ ' · marked by you' if last.submitted_by == 'you' }}</span>
+            · <a href="{{ url_for('application_page', app_id=last.id) }}" class="small">What was entered</a></p>
+        {% elif last and last.status in ('starting', 'working', 'needs_you') %}
+          <div class="row"><span class="pill {{ 'needs_answers' if last.status == 'needs_you' else 'generating' }}">{{ 'Needs you' if last.status == 'needs_you' else 'In progress' }}</span>
+            <a href="{{ url_for('application_page', app_id=last.id) }}" class="btn sm">Open the application</a></div>
+        {% else %}
+          <p class="small muted">Stop here and apply yourself with the CV and letter above, or let the assistant fill in the application in a private browser on this computer. You watch it on the right, can take over at any time, and approve the final submit.{% if linkedin_offsite %} This job applies on the company's own site: the assistant opens the LinkedIn posting, you click Apply there (signing in to LinkedIn once if it asks), and it carries on by itself.{% endif %}</p>
+          <div class="row mt-sm">
+            <a href="{{ url_for('apply_start', run_id=run.id) }}" class="btn">Apply with the assistant…</a>
+            {% if last %}<a href="{{ url_for('application_page', app_id=last.id) }}" class="small">Last attempt: {{ last.status }}</a>{% endif %}
+          </div>
+        {% endif %}
+      </div>
+    </section>
+  {% endif %}
+
+  {# ---- interview prep ---- #}
+  {% if run.requirements %}
+    {% set p = run.prep or {} %}{% set n = p.get('notes') or {} %}
+    <section id="prep" class="card" data-part>
+      <header class="card-head"><h2>Interview prep</h2>{{ badge(states.prep) }}</header>
+      {{ section_notes('prep') }}
+      {% if 'prep' in busy %}
+        <p class="small muted"><span class="spinner" aria-hidden="true"></span> {{ 'Prep notes follow once the CV is written.' if run.status == 'generating' else 'Writing prep notes…' }}</p>
+      {% elif n %}
+        {% if n.role_in_brief %}<p class="mb-sm">{{ n.role_in_brief }}</p>{% endif %}
+        {% if n.brush_up %}
+          <details class="acc" data-key="prep-brush"><summary>Brush up on <span class="count">{{ n.brush_up|length }}</span></summary>
+            <div class="acc-body"><ul class="prep-list">{% for b in n.brush_up %}
+              <li><span class="mini-pill m-{{ {'strong': 'strong', 'refresh': 'partial', 'gap': 'none'}.get(b.status, 'weak') }}">{{ b.status or 'topic' }}</span>
+                <strong>{{ b.topic }}</strong><div class="small muted">{{ b.why }}</div></li>{% endfor %}</ul></div>
+          </details>
+        {% endif %}
+        {% if n.likely_questions %}
+          <details class="acc" data-key="prep-questions"><summary>Likely questions <span class="count">{{ n.likely_questions|length }}</span></summary>
+            <div class="acc-body"><ul class="prep-list">{% for q in n.likely_questions %}
+              <li>{{ q.question }} <span class="small faint">· {{ q.kind }}</span>{% if q.draw_on %}<div class="small muted">Draw on: {{ q.draw_on }}</div>{% endif %}</li>{% endfor %}</ul></div>
+          </details>
+        {% endif %}
+        {% if n.ask_them %}<details class="acc" data-key="prep-ask"><summary>Questions to ask them <span class="count">{{ n.ask_them|length }}</span></summary><div class="acc-body"><ul class="dot-list small">{% for a in n.ask_them %}<li>{{ a }}</li>{% endfor %}</ul></div></details>{% endif %}
+        {% if n.watch_outs %}<details class="acc" data-key="prep-watch"><summary>Watch-outs <span class="count">{{ n.watch_outs|length }}</span></summary><div class="acc-body"><ul class="dot-list small">{% for w in n.watch_outs %}<li>{{ w }}</li>{% endfor %}</ul></div></details>{% endif %}
+        {% if n.company_points %}<details class="acc" data-key="prep-company"><summary>About {{ run.company }} <span class="count">{{ n.company_points|length }}</span></summary><div class="acc-body"><ul class="dot-list small">{% for c in n.company_points %}<li>{{ c }}</li>{% endfor %}</ul><p class="small faint mt-xs">From the company research below.</p></div></details>{% endif %}
+        <form method="post" action="{{ url_for('write_prep', run_id=run.id) }}" class="row mt-sm" data-inline>
+          <span class="small faint">Written {{ p.written_at|when }} from the posting, your profile, the application check and the company research.</span>
+          <button type="submit" class="link-btn small" data-busy-text="Writing…">Write them again</button>
+        </form>
+      {% else %}
+        {% if p.error %}<p class="small error-text">{{ p.error }}</p>{% endif %}
+        <p class="small muted">What to brush up on, likely questions (and which of your experiences to draw on), and questions to ask. One LLM request; written automatically once the CV is ready unless you turned that off in Settings.</p>
+        <form method="post" action="{{ url_for('write_prep', run_id=run.id) }}" class="mt-sm" data-inline><button type="submit" class="secondary sm" data-busy-text="Writing…">Write prep notes</button></form>
+      {% endif %}
+    </section>
+
+    {# ---- company research: a separate agent, with sources ---- #}
+    <section id="research" class="card" data-part>
+      <header class="card-head"><h2>Company research{% if run.company %}: {{ run.company }}{% endif %}</h2>{{ badge(states.research) }}</header>
+      {{ section_notes('research') }}
+      {% set f = research or {} %}
+      {% if 'research' in busy %}
+        <p class="small muted"><span class="spinner" aria-hidden="true"></span> Researching {{ run.company }}… the nerdbar shows each source.</p>
+      {% elif f.get('researched_at') %}
+        {% set s = f.get('summary') or {} %}
+        {% if s.get('what_they_do') %}<p>{{ s.what_they_do }}</p>{% elif f.basics %}<p>{{ f.basics.summary|truncate(600) }}</p>{% endif %}
+        {% if f.facts %}
+          <dl class="facts mt-sm small">{% for k, v in f.facts.items() %}<dt>{{ k }}</dt><dd class="break">{{ v }}</dd>{% endfor %}</dl>
+        {% endif %}
+        {% if s.get('points') %}
+          <ul class="prep-list small mt-md mb-sm">{% for x in s.points %}<li>{{ x.point }} <span class="faint">· {{ x.source }}</span></li>{% endfor %}</ul>
+        {% endif %}
+        {% if f.discussions %}
+          <details class="acc" data-key="research-discussions"><summary>Discussions <span class="count">{{ f.discussions|length }}</span></summary>
+            <div class="acc-body"><ul class="prep-list small">{% for d in f.discussions %}
+              <li><a href="{{ d.url }}" target="_blank" rel="noopener noreferrer">{{ d.title }} ↗</a> <span class="faint">· {{ d.source }} · {{ d.points }} points · {{ d.comments }} comments · {{ d.date }}</span></li>{% endfor %}</ul>
+            {% if s.get('discussions') %}<ul class="dot-list small mt-sm">{% for x in s.discussions %}<li>{{ x.point }}</li>{% endfor %}</ul>{% endif %}</div>
+          </details>
+        {% endif %}
+        {% set w = f.web or {} %}
+        {% if w.get('news') %}
+          <details class="acc" data-key="research-news"><summary>News this year <span class="count">{{ w.news|length }}</span></summary>
+            <div class="acc-body"><ul class="prep-list small">{% for n in w.news %}
+              <li><a href="{{ n.url }}" target="_blank" rel="noopener noreferrer">{{ n.title }} ↗</a> <span class="faint">· {{ n.site }}{% if n.date %} · {{ n.date[:16] }}{% endif %}</span>
+                {% if n.snippet %}<div class="muted">{{ n.snippet|truncate(260) }}</div>{% endif %}</li>{% endfor %}</ul></div>
+          </details>
+        {% endif %}
+        {% if s.get('for_interviews') %}
+          <details class="acc" data-key="research-interviews"><summary>For your interviews <span class="count">{{ s.for_interviews|length }}</span></summary><div class="acc-body"><ul class="dot-list small">{% for x in s.for_interviews %}<li>{{ x }}</li>{% endfor %}</ul></div></details>
+        {% endif %}
+        {% set cited = [] %}
+        {% if f.basics and f.basics.url %}{% set _ = cited.append(('Wikipedia', f.basics.url)) %}{% endif %}
+        {% if f.facts %}{% set _ = cited.append(('Wikidata', '')) %}{% endif %}
+        {% if f.website and f.website.get('text') %}{% set _ = cited.append(('company website', f.website.url)) %}{% endif %}
+        {% if f.discussions %}{% set _ = cited.append(('Hacker News', '')) %}{% endif %}
+        {% if f.web %}{% set _ = cited.append(('Tavily search', '')) %}{% endif %}
+        <p class="small faint mt-md">
+          {{ f.depth|capitalize }} research, {{ f.researched_at|when }}. Sources:
+          {% for name, url in cited %}{% if url %}<a href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ name }} ↗</a>{% else %}{{ name }}{% endif %}{{ ' · ' if not loop.last }}{% else %}nothing found{% endfor %}.
+          {% for x in f.skipped if not x.get('linked') %}{{ x.source }}: {{ x.why }}. {% endfor %}
+        </p>
+      {% elif research_depth == 'off' %}
+        <p class="small muted">Company research is off (Settings → Pace and automation). You can still run it for this company:</p>
+      {% else %}
+        <p class="small muted">A separate agent gathers what's publicly available about the employer, with the source of every point.</p>
+      {% endif %}
+      {% if can_research and run.company and 'research' not in busy %}
+        <form method="post" action="{{ url_for('research_company', run_id=run.id) }}" class="row mt-sm" data-inline>
+          <button type="submit" name="depth" value="simple" class="secondary sm" data-busy-text="Starting…">{{ 'Simple again' if f.get('depth') == 'simple' else 'Simple research' }}</button>
+          <button type="submit" name="depth" value="thorough" class="secondary sm" data-busy-text="Starting…">{{ 'Thorough again' if f.get('depth') == 'thorough' else 'Thorough research' }}</button>
+          <span class="info" tabindex="0" aria-describedby="depth-info">ⓘ<span class="tip" role="tooltip" id="depth-info">Simple: a Wikipedia summary and review links, no LLM tokens. Thorough: also Wikidata facts, the company's About page (only if its robots.txt allows), Hacker News and, with your key, Tavily's news and web search (2 credits), organised with sources by one LLM request. Sources are chosen in Settings.</span></span>
+        </form>
+      {% endif %}
+
+      <div class="sub mt-md">
+        <h3 class="sub-title">What people say</h3>
+        {% set w = (research or {}).get('web') or {} %}
+        {% set said = ((research or {}).get('summary') or {}).get('what_people_say') or [] %}
+        {% if said %}
+          <ul class="prep-list small mb-sm">{% for x in said %}<li>{{ x.point }} <span class="faint">· {{ x.source }}</span></li>{% endfor %}</ul>
+        {% endif %}
+        {% if w.get('people') %}
+          <details class="acc" data-key="research-people"><summary>Found by Tavily with your key <span class="count">{{ w.people|length }}</span></summary>
+            <div class="acc-body"><ul class="prep-list small">{% for n in w.people %}
+              <li><a href="{{ n.url }}" target="_blank" rel="noopener noreferrer">{{ n.title }} ↗</a> <span class="faint">· {{ n.site }}</span>
+                {% if n.snippet %}<div class="muted">{{ n.snippet|truncate(260) }}</div>{% endif %}</li>{% endfor %}</ul>
+            <p class="small faint mt-xs">Extracts from Tavily's search index; the app itself never visits these sites.</p></div>
+          </details>
+        {% endif %}
+        <p class="small muted mt-sm">The review sites don't allow automated reading, so the app links to them. Paste what you read to have it summarised.</p>
+        {% if research_links %}<p class="small mt-xs">{% for l in research_links %}<a href="{{ l.url }}" target="_blank" rel="noopener noreferrer" title="{{ l.about }}">{{ l.site }} ↗</a>{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
+        {% set r = p.get('reviews') %}
+        {% if 'reviews' in busy %}
+          <p class="small muted mt-sm"><span class="spinner" aria-hidden="true"></span> Summarising the reviews you pasted…</p>
+        {% elif r %}
+          <div class="panel quiet mt-sm">
+            {% if r.overall %}<p>{{ r.overall }}</p>{% endif %}
+            {% for key, label in [('pros', 'Good'), ('cons', 'Not so good'), ('interview_experiences', 'Interviews'), ('ask_about', 'Worth asking about')] %}
+              {% if r[key] %}<p class="small muted mt-sm">{{ label }}</p><ul class="dot-list small">{% for x in r[key] %}<li>{{ x }}</li>{% endfor %}</ul>{% endif %}
+            {% endfor %}
+            <p class="small faint mt-sm">Summarised {{ r.summarised_at|when }} from {% if r.pasted and r.pasted > r.chars %}the first {{ '{:,}'.format(r.chars) }} of the {{ '{:,}'.format(r.pasted) }}{% else %}{{ '{:,}'.format(r.chars) }}{% endif %} characters you pasted.</p>
+          </div>
+        {% endif %}
+        {% if p.get('reviews_error') %}<p class="small error-text">{{ p.reviews_error }}</p>{% endif %}
+        <details class="acc mt-sm" data-key="research-paste"><summary>Paste reviews to summarise</summary>
+          <div class="acc-body">
+            <form method="post" action="{{ url_for('summarise_reviews', run_id=run.id) }}" data-inline>
+              <textarea name="reviews" id="reviews-text" rows="6" placeholder="Paste reviews from Glassdoor, Indeed, Blind…"></textarea>
+              <p class="hint">The first {{ '{:,}'.format(reviews_limit) }} characters are summarised, so put the reviews that matter most first.</p>
+              <button type="submit" class="secondary sm mt-sm" data-busy-text="Sending…">Summarise (one LLM request)</button>
+            </form>
+          </div>
+        </details>
+      </div>
+    </section>
+  {% endif %}
+
+  {# ---- your answers for this job (the posting itself is a tab on the right) ---- #}
+  {% if answers %}
+    <section id="answers" class="card" data-part>
+      <header class="card-head"><h2>Your answers</h2>{{ badge(states.posting) }}</header>
+      <dl class="facts">{% for term, shown in answers %}<dt>{{ term }}</dt><dd>{{ shown }}</dd>{% endfor %}</dl>
+      {% if can_answer %}<p class="small mt-sm"><a href="{{ url_for('run_questions', run_id=run.id) }}">Change them for a new version</a></p>{% endif %}
+    </section>
+  {% endif %}
+
+  <section class="row page-foot">
+    <form method="post" action="{{ url_for('archive_run', run_id=run.id) }}">
+      <input type="hidden" name="archived" value="{{ '0' if run.archived else '1' }}">
+      <button type="submit" class="secondary sm">{{ 'Restore from archive' if run.archived else 'Archive' }}</button>
+    </form>
+    <form method="post" action="{{ url_for('delete_run', run_id=run.id) }}" data-confirm="Delete this job and all {{ versions|length }} of its versions? Files are removed from this computer. This can't be undone.">
+      <button type="submit" class="danger sm">Delete job</button>
+    </form>
+    <span class="small faint">Archive hides it but keeps everything. Delete removes it and its files.</span>
+  </section>
+{% endblock %}
+
+{% block dock_label %}Your CV versions{% endblock %}
+{% block dock %}
+{% set improving = run.improve or {} %}
+<div id="dock-body" data-run="{{ run.id }}" data-part="quiet" data-latest="{{ versions[0].version if versions else 0 }}">
+  <div class="dock-head">
+    {% if versions %}
+      <label for="dock-version" class="sr-only">Version</label>
+      <select id="dock-version" class="select-sm">
+        {% for v in versions %}<option value="{{ v.version }}">v{{ v.version }}{{ ' · latest' if loop.first }}{{ ' · ATS ' ~ v.ats.score if v.ats }}</option>{% endfor %}
+      </select>
+    {% else %}
+      <h2 class="dock-title">The posting</h2>
+    {% endif %}
+    <div class="tabs" role="tablist" aria-label="What to show">
+      {% set tabs = [('cv', 'CV'), ('letter', 'Letter'), ('ats', 'ATS check'), ('facts', 'Fact check'), ('posting', 'Posting')] if versions else [('posting', 'Posting')] %}
+      {% for key, label in tabs %}
+        <button type="button" role="tab" data-tab="{{ key }}" aria-selected="{{ 'true' if loop.first else 'false' }}">{{ label }}</button>
+      {% endfor %}
+    </div>
+  </div>
+
+  {% if improving.get('status') in ('checking', 'ready') %}
+    <p class="sec-note">
+      {% if improving.status == 'checking' %}<span class="spinner" aria-hidden="true"></span> Checking your picks from v{{ improving.version }}'s ATS check…{% else %}Your picks from v{{ improving.version }}'s ATS check are checked: a few questions for you.{% endif %}
+      <a href="{{ url_for('improve_page', run_id=run.id) }}">{{ 'See progress' if improving.status == 'checking' else 'Answer them' }} →</a>
+    </p>
+  {% endif %}
+
+  {% for v in versions %}
+    {% set draft = v.draft or {} %}
+    <div class="dock-version" data-version="{{ v.version }}" {{ 'hidden' if not loop.first }}>
+      <div class="v-bar">
+        {% if v.cv %}<a href="{{ url_for('download_document', doc_id=v.cv.id) }}" class="btn sm">Download CV</a>{% endif %}
+        {% if v.letter %}<a href="{{ url_for('download_document', doc_id=v.letter.id) }}" class="btn secondary sm">Letter</a>{% endif %}
+        <span class="small faint">{{ v.created_at|when }}{% if v.model %} · {{ v.model }}{% endif %}{% if v.improved_from %} · improved from v{{ v.improved_from }}{% endif %}</span>
+        <form method="post" action="{{ url_for('delete_version', run_id=run.id, version=v.version) }}" class="push-right"
+              data-confirm="Delete v{{ v.version }}{{ ' (CV and letter)' if v.letter else '' }}? The files are removed from this computer.">
+          <button type="submit" class="link-btn quiet-danger small">Delete v{{ v.version }}</button>
+        </form>
+      </div>
+      <p class="small muted v-note">
+        {% if v.yes %}Confirmed for this version: {{ v.yes|join(', ') }}.{% else %}No extra skills confirmed.{% endif %}
+        {% if v.changes %}The fact check changed {{ v.changes|length }} thing{{ '' if v.changes|length == 1 else 's' }}.{% elif v.draft %}The fact check found nothing to change.{% endif %}
+      </p>
+      <div class="tab-panel" data-tab="cv">
+        {% if draft %}
+          {% set rewrites = v.rewrites %}
+          <label class="check small"><input type="checkbox" class="orig-toggle"> Show my original wording next to each rewritten bullet</label>
+          {{ cv_paper(draft, rewrites) }}
+        {% else %}
+          <p class="dock-empty">Preview isn't available for this version (it was made before previews existed). Download it to read it.</p>
+        {% endif %}
+      </div>
+      <div class="tab-panel" data-tab="letter" hidden>
+        {% if v.letter_text %}
+          <div class="paper letter">{% for para in v.letter_text.split('\n\n') %}<p>{{ para }}</p>{% endfor %}</div>
+        {% else %}
+          <p class="dock-empty">No letter for this version. Tick “Also write a cover letter” on <a href="{{ url_for('run_questions', run_id=run.id) }}">a new version</a>, or when you improve it from its ATS check.</p>
+        {% endif %}
+      </div>
+      <div class="tab-panel" data-tab="ats" hidden>
+        {% set a = v.ats %}
+        {% if a %}
+          {% set must = a.keywords|selectattr('required')|list %}
+          <div class="ats-head ats-{{ a.grade|lower }}">
+            <div class="ats-ring" style="--p: {{ a.score }}"><span>{{ a.score }}</span></div>
+            <div>
+              <strong>{{ a.grade }} ATS match</strong>
+              <div class="small muted">{{ must|selectattr('in_cv')|list|length }} of {{ must|length }} must-have keywords{% if a.title %} · titled “{{ a.title }}”{% endif %}</div>
+              <div class="small faint">Counted from the CV's text, not by an LLM: the same CV and posting always get the same score, and every point below can be traced.</div>
+            </div>
+          </div>
+
+          {% if v.compare %}
+            {% set c = v.compare %}
+            <div class="ats-compare {{ 'up' if c.delta > 0 else 'down' if c.delta < 0 else 'same' }}">
+              <strong>Checked again: v{{ v.improved_from }} {{ c.before }} → v{{ v.version }} {{ c.after }}
+                ({{ '+' if c.delta > 0 }}{{ c.delta }})</strong>
+              {% set moved = c.checks|rejectattr('delta', 'equalto', 0)|list %}
+              {% if moved %}
+                <ul class="small">{% for row in moved %}<li>{{ row.label }}: {{ row.before|round|int }} → {{ row.after|round|int }} of {{ row.max }}
+                  <span class="{{ 'ok-text' if row.delta > 0 else 'error-text' }}">({{ '+' if row.delta > 0 }}{{ row.delta|round(1) }})</span></li>{% endfor %}</ul>
+              {% else %}<p class="small muted">No part of the score moved: the answers didn't add anything the check counts.</p>{% endif %}
+              {% if v.outcomes %}
+                <p class="small muted mt-sm">What you picked:</p>
+                <ul class="small">{% for o in v.outcomes %}<li><span class="{{ 'ok-text' if o.done else 'faint' }}">{{ '✓' if o.done else '–' }}</span> {{ o.label }} <span class="faint">· {{ o.detail }}</span></li>{% endfor %}</ul>
+              {% endif %}
+            </div>
+          {% endif %}
+
+          {% if v.improvable %}
+            <form method="post" action="{{ url_for('improve_start', run_id=run.id, version=v.version) }}" class="improve-form">
+              <p class="small muted mt-md">Pick what to improve. The LLM checks your picks against your profile and asks only what it needs; nothing changes until you answer. Your answers go into your profile, then a new version is written and checked again.</p>
+          {% endif %}
+          <ul class="ats-checks">
+            {% for c in a.checks %}
+              {% set picks = v.improvable|selectattr('group', 'equalto', c.key)|list %}
+              <li class="{{ 'ok' if c.ok else 'warn' }}"><span class="ac-icon" aria-hidden="true">{{ '✓' if c.ok else '!' }}</span>
+                <div><strong>{{ c.label }}</strong> <span class="small muted">· {{ c.detail }}</span>
+                  {% if picks and c.key in ('must', 'nice', 'context') %}
+                    <ul class="improve-items">
+                      {% for i in picks %}
+                        <li><label class="check small"><input type="checkbox" name="item" value="{{ i.id }}" {{ 'checked' if i.default }}>
+                          <span><strong>{{ i.label }}</strong> <span class="muted">· {{ i.detail }}</span> <span class="gain">up to +{{ i.gain|round|int if i.gain >= 1 else i.gain }}</span></span></label></li>
+                      {% endfor %}
+                    </ul>
+                  {% elif picks %}
+                    <label class="check small mt-xs"><input type="checkbox" name="item" value="{{ picks[0].id }}" {{ 'checked' if picks[0].default }}>
+                      <span>Improve this <span class="gain">up to +{{ picks[0].gain|round|int if picks[0].gain >= 1 else picks[0].gain }}</span>{% if c.fix %} <span class="faint">· {{ c.fix }}</span>{% endif %}</span></label>
+                  {% elif c.fix %}<div class="small mt-xs">{{ c.fix }}</div>{% endif %}
+                </div>
+                <span class="ac-points">{{ c.points|round|int }}/{{ c.max }}</span></li>
+            {% endfor %}
+          </ul>
+          {% if v.improvable %}
+              <div class="row mt-md">
+                <button type="submit" data-busy-text="Sending…">Check my picks and ask me →</button>
+                <span class="small faint">One LLM request.</span>
+              </div>
+            </form>
+          {% endif %}
+
+          {% set f = a.file %}
+          {% if f %}
+            <h3 class="mt-lg">The file, read back</h3>
+            <p class="small muted">The DOCX the employer gets, opened and read the way an ATS parser reads it, to confirm it holds what the check counted.</p>
+            <ul class="ats-checks">
+              {% for i in f['items'] %}
+                <li class="{{ 'ok' if i.ok else 'warn' }}"><span class="ac-icon" aria-hidden="true">{{ '✓' if i.ok else '!' }}</span>
+                  <div><strong>{{ i.label }}</strong> <span class="small muted">· {{ i.detail }}</span></div><span class="ac-points"></span></li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+
+          <details class="acc mt-lg" data-key="ats-how-{{ v.version }}">
+            <summary>How the score is counted</summary>
+            <div class="acc-body small">
+              <p>Out of 100, from the CV's own text: no LLM and no randomness. Each part counts what it says, then is weighted:</p>
+              <dl class="facts mt-sm">
+                {% for key, label in [('must', 'Must-have keywords: the share found, under any of their names'), ('nice', 'Nice-to-have keywords: the share found'),
+                                      ('context', 'Keywords in context: found must-haves that appear in a bullet or the summary'), ('title', 'Job title at the top'),
+                                      ('sections', 'Standard sections: summary, experience, skills, education'), ('contact', 'Email and phone'),
+                                      ('dates', 'Dates on every role'), ('numbers', 'Bullets with numbers (3 in 10 is full marks)'), ('length', 'Length: 300 to 1,100 words')] %}
+                  <dt>{{ ats_weights[key] }}</dt><dd>{{ label }}</dd>
+                {% endfor %}
+              </dl>
+              <p class="mt-sm faint">Tracking systems differ by vendor, and each employer configures theirs, so no tool can promise the number a particular employer's system shows. This counts what they commonly look at: the posting's keywords in its own wording, readable structure and contact details, dates and title.</p>
+            </div>
+          </details>
+          <details class="acc mt-sm" data-key="ats-keywords-{{ v.version }}">
+            <summary>The posting's keywords <span class="count">{{ a.keywords|length }}</span></summary>
+            <div class="acc-body">
+              <div class="table-wrap">
+                <table class="table small kw-table">
+                  <thead><tr><th>Keyword</th><th>In this CV</th></tr></thead>
+                  <tbody>
+                    {% for k in a.keywords %}
+                      <tr>
+                        <td>{{ k.term }}{% if k.required %} <span class="tag must">must</span>{% endif %}</td>
+                        <td>{% if k.in_cv %}<span class="kw-yes">✓</span> <span class="faint">{{ k.places|join(', ')|truncate(64) }}{% if k.count > 1 %} · {{ k.count }}×{% endif %}</span>{% elif k.have %}<span class="kw-no">missing, though your profile has it</span>{% else %}<span class="kw-gap">not in your profile</span>{% endif %}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+              {% if a.stuffed %}<p class="small warn-text mt-sm">Used many times: {{ a.stuffed|join(', ') }}. Repeating a keyword too often can read as stuffing.</p>{% endif %}
+            </div>
+          </details>
+        {% else %}
+          <p class="dock-empty">No ATS check for this version.</p>
+        {% endif %}
+      </div>
+      <div class="tab-panel" data-tab="facts" hidden>
+        {% if v.changes %}
+          <ul class="check-list">
+            {% for it in v.changes %}
+              <li>
+                <div class="what">{{ it.action|capitalize }} in {{ it.where }}</div>
+                <div>“{{ it.text }}”</div>
+                <div class="small muted">Why: {{ it.reason }}</div>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="dock-empty">The fact check found nothing to change: everything in this version comes from your profile.</p>
+        {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+
+  <div class="tab-panel dock-posting" data-tab="posting" {{ 'hidden' if versions }}>
+    {% if run.jd_text %}
+      <p class="small faint mb-sm">{{ '{:,}'.format(run.jd_text|length) }} characters{% if run.job_url %} · <a href="{{ run.job_url }}" target="_blank" rel="noopener noreferrer">the original posting ↗</a>{% endif %}{% if not versions %} · your CV previews appear here once written{% endif %}</p>
+      <div class="jd-text dock-jd">{{ run.jd_text }}</div>
+    {% else %}
+      <p class="dock-empty">The posting appears here once it's read{% if run.status == 'needs_paste' %}: paste it on the left{% endif %}.</p>
+    {% endif %}
+  </div>
+  {% if versions %}<p class="small mt-md"><a href="{{ url_for('documents', job=run.id) }}">All of this job's files in Documents</a></p>{% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    var RUN = '{{ run.id }}', KEY = 'dock.' + RUN;
+    function remember(v) { try { sessionStorage.setItem(KEY, JSON.stringify(v)); } catch (e) { /* private window */ } }
+    function recall() { try { return JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch (e) { return null; } }
+
+    // ---- the preview on the right: a version, and what to show of it ----
+    function show(version, tab, scroll) {
+      var body = document.getElementById('dock-body');
+      if (!body) return;
+      var panes = body.querySelectorAll('.dock-version');
+      if (!panes.length) {  // no CV yet: the posting is all there is
+        body.querySelectorAll('[role=tab]').forEach(function (b) { b.setAttribute('aria-selected', 'true'); });
+        return;
+      }
+      var target = body.querySelector('.dock-version[data-version="' + version + '"]') || panes[0];
+      version = target.dataset.version;
+      tab = tab || (recall() || {}).tab || 'cv';
+      panes.forEach(function (p) { p.hidden = p !== target; });
+      target.querySelectorAll('.tab-panel').forEach(function (p) { p.hidden = p.dataset.tab !== tab; });
+      var posting = body.querySelector('.dock-posting');
+      if (posting) posting.hidden = tab !== 'posting';
+      body.querySelectorAll('[role=tab]').forEach(function (b) { b.setAttribute('aria-selected', String(b.dataset.tab === tab)); });
+      var select = document.getElementById('dock-version');
+      if (select) select.value = version;
+      remember({version: version, tab: tab});
+      if (scroll && !window.matchMedia('(min-width: 1000px)').matches) document.getElementById('dock').scrollIntoView({behavior: 'smooth'});
+    }
+    document.addEventListener('click', function (e) {
+      var trigger = e.target.closest('[data-preview]');
+      if (trigger) { e.preventDefault(); show(trigger.dataset.preview, trigger.dataset.tab, true); return; }
+      var tab = e.target.closest('#dock-body [role=tab]');
+      if (tab) { var cur = recall() || {}; show(cur.version, tab.dataset.tab); }
+    });
+    document.addEventListener('change', function (e) {
+      if (e.target.id === 'dock-version') show(e.target.value, (recall() || {}).tab);
+    });
+    var saved = recall();
+    if (saved) show(saved.version, saved.tab);
+
+    // ---- new results arrive without reloading: only the parts that changed are replaced (app.js), and whatever you
+    //      have open or have typed stays as it is ----
+    var ACTIVE = ['fetching', 'analyzing', 'generating'];
+    function state() {
+      var status = document.getElementById('status');
+      return {status: status.dataset.status, busy: status.dataset.busy ? status.dataset.busy.split(',') : []};
+    }
+    var watching = false;
+    function watch() {
+      if (watching) return;
+      watching = true;
+      CV.poll('/api/runs?ids=' + RUN, function (d) {
+        var run = d.runs[RUN];
+        if (!run) { watching = false; return false; }
+        var now = state();
+        if (run.status !== now.status || (run.busy || []).join() !== now.busy.join()) CV.refresh();
+        var more = ACTIVE.indexOf(run.status) !== -1 || (run.busy || []).length > 0;
+        if (!more) watching = false;
+        return more;
+      });
+    }
+    var latest = (document.getElementById('dock-body') || {dataset: {}}).dataset.latest;
+    document.addEventListener('cv:swapped', function () {
+      var body = document.getElementById('dock-body'), cur = recall() || {};
+      if (body && body.dataset.latest !== latest) {  // a new version arrived: show it (its ATS check, if it improves one)
+        latest = body.dataset.latest;
+        var improved = body.querySelector('.dock-version[data-version="' + latest + '"] .ats-compare');
+        show(latest, improved ? 'ats' : cur.tab);
+      } else if (cur.version) show(cur.version, cur.tab);
+      var now = state();
+      if (ACTIVE.indexOf(now.status) !== -1 || now.busy.length) watch();
+    });
+    var first = state();
+    if (ACTIVE.indexOf(first.status) !== -1 || first.busy.length) watch();
+  })();
+</script>
+{% endblock %}

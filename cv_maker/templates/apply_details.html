@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Application details — CV Tailor{% endblock %}
+{% block content %}
+  {% set back = came_from(url_for('settings'), 'Settings') %}
+  <a href="{{ back[0] }}" class="back">← {{ back[1] }}</a>
+  <div class="page-head">
+    <div>
+      <h1>Application details</h1>
+      <p class="lead">What the apply assistant may put on application forms; your accounts on job sites are alongside. Stored on this computer; filled in by rule, so the LLM only ever sees placeholders for your contact details.</p>
+    </div>
+  </div>
+
+  <form method="post" class="panel">
+    <input type="hidden" name="next" value="{{ request.args.get('next', '') }}">
+    <h2>About you</h2>
+    <div class="grid-2">
+      {% for key, label, kind in standard[:10] %}
+        <div class="field">
+          <label for="{{ key }}">{{ label }}{% if kind %} <span class="faint">· hidden from the LLM</span>{% endif %}</label>
+          <input type="text" id="{{ key }}" name="{{ key }}" value="{{ details.standard[key] }}" autocomplete="off">
+        </div>
+      {% endfor %}
+    </div>
+    <h2 class="mt-md">Common questions</h2>
+    <p class="small muted" style="margin-bottom: 12px;">Sent as text so the LLM can match them to a form's options, for example "Yes" to "Are you authorised to work in the UK?".</p>
+    <div class="grid-2">
+      {% for key, label, kind in standard[10:] %}
+        <div class="field">
+          <label for="{{ key }}">{{ label }}</label>
+          <input type="text" id="{{ key }}" name="{{ key }}" value="{{ details.standard[key] }}" autocomplete="off">
+        </div>
+      {% endfor %}
+    </div>
+    <div class="field">
+      <label for="custom">Other saved answers (one per line: question = answer)</label>
+      <textarea id="custom" name="custom" rows="4" placeholder="Years of experience with Python = 6">{% for c in details.custom %}{{ c.question }} = {{ c.answer }}
+{% endfor %}</textarea>
+      <p class="hint">Answers you choose to save during an application appear here too.</p>
+    </div>
+    <button type="submit">Save</button>
+  </form>
+
+{% endblock %}
+{% block dock_label %}Accounts on job sites{% endblock %}
+{% block dock %}
+  <section id="accounts">
+    <div class="dock-head"><h2 class="dock-title">Accounts on job sites</h2></div>
+    <p class="small muted">Accounts the assistant helped create. {% if keychain %}Passwords are in {{ keychain }} (entries named “CV Tailor”{% if keychain == 'Windows Credential Manager' %}, under Windows Credentials → Generic Credentials{% endif %}), never in the app's files, its export or the LLM.{% else %}No system password store was found, so passwords were shown to you once and aren't stored.{% endif %}</p>
+    {% if accounts %}
+      <div class="table-wrap mt-sm">
+        <table class="table small">
+          <thead><tr><th>Site</th><th>Email</th><th>Created</th><th><span class="sr-only">Actions</span></th></tr></thead>
+          <tbody>
+            {% for a in accounts %}
+              <tr>
+                <td>{{ a.site }}</td><td class="break">{{ a.email }}</td><td class="faint nowrap">{{ a.created_at|when }}</td>
+                <td><form method="post" action="{{ url_for('forget_account') }}" data-confirm="Forget the {{ a.site }} account here{{ ' and remove its saved password' if a.in_keychain }}? The account itself stays on {{ a.site }}.">
+                  <input type="hidden" name="site" value="{{ a.site }}"><input type="hidden" name="email" value="{{ a.email }}">
+                  <button type="submit" class="link-btn quiet-danger">Forget</button></form></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% set saved = accounts|selectattr('in_keychain')|list %}
+      <form method="post" action="{{ url_for('auto_sign_in') }}" class="mt-md">
+        <input type="hidden" name="next" value="{{ request.args.get('next', '') }}">
+        <label class="check small"><input type="checkbox" name="auto_sign_in" value="1" {{ 'checked' if details.auto_sign_in }} onchange="this.form.submit()">
+          <span>Sign me in with a saved account when a job site asks: the assistant fills it in and presses the site's own Sign in button, on that site only. Never on LinkedIn, and never to create an account (its terms are yours to accept).</span></label>
+        <noscript><button type="submit" class="secondary sm mt-sm">Save</button></noscript>
+      </form>
+      {% if keychain and saved %}
+        <form method="post" action="{{ url_for('export_passwords') }}" class="panel quiet mt-md">
+          <h3>Move them to a password manager</h3>
+          <p class="small muted">Downloads a .csv in the format Bitwarden, 1Password, Chrome, Edge, Firefox, Proton Pass and KeePassXC import (name, url, username, password, note), with the {{ saved|length }} saved password{{ '' if saved|length == 1 else 's' }}. The passwords are in plain text: import the file, then delete it and empty the bin. Opening it in a spreadsheet can change symbols in a password, so import it directly.</p>
+          <label class="check small mt-sm"><input type="checkbox" name="understood" value="1" required> I understand the file has my passwords in plain text</label>
+          <button type="submit" class="secondary mt-sm">Download for a password manager (.csv)</button>
+        </form>
+      {% endif %}
+    {% else %}
+      <p class="small faint mt-sm">None yet.</p>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('add_account') }}" class="panel quiet mt-md" autocomplete="off">
+      <input type="hidden" name="next" value="{{ request.args.get('next', '') }}">
+      <h3>Add an account you already have</h3>
+      <p class="small muted">For a job site where you have an account, so the assistant can sign you in there. {% if keychain %}The password goes to {{ keychain }}, never to the app's files, its export or the LLM.{% else %}No system password store was found, so a password can't be kept; you can still save the account.{% endif %} Adding the same site and email again updates the password.</p>
+      <div class="grid-3 mt-sm">
+        <div class="field"><label for="acc-site">Site</label><input type="text" id="acc-site" name="site" placeholder="careers.acme.com" required></div>
+        <div class="field"><label for="acc-user">Email or username</label><input type="text" id="acc-user" name="username" value="{{ details.standard.email }}" required></div>
+        <div class="field"><label for="acc-pass">Password</label><input type="password" id="acc-pass" name="password" autocomplete="new-password" {{ 'disabled' if not keychain }}></div>
+      </div>
+      <p class="hint">On application systems many employers share (Workday, iCIMS, Taleo, SuccessFactors…) every employer has its own login, so enter its full address, like acme.wd3.myworkdayjobs.com.</p>
+      <button type="submit" class="secondary mt-sm">Save account</button>
+    </form>
+  </section>
+{% endblock %}

@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}Profile — CV Tailor{% endblock %}
+{% macro upload_form(compact=False) -%}
+  <form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data" class="upload-form">
+    <label class="drop-zone">
+      <strong>{{ 'Drop a CV file here' if compact else 'Drop your CV here' }}</strong>
+      or click to choose a PDF or DOCX
+      <div class="file-name small" aria-live="polite"></div>
+      <input type="file" name="cv" accept=".pdf,.docx" required>
+    </label>
+    {% if compact %}
+      <div class="row mt-md small">
+        <label class="check"><input type="radio" name="mode" value="merge" checked> Add new details to my profile</label>
+        <label class="check"><input type="radio" name="mode" value="replace"> Replace my profile with this CV</label>
+      </div>
+    {% endif %}
+    <button type="submit" class="mt-md">Read CV</button>
+  </form>
+{%- endmacro %}
+{% block content %}
+  <div class="page-head">
+    <div>
+      <h1>Profile</h1>
+      <p class="lead">{% if profile %}Everything saved about you. Tailored CVs and letters only ever use these facts.{% else %}Start by adding your CV. It's read into a profile you can check and edit.{% endif %}</p>
+    </div>
+    {% if profile %}<a href="{{ url_for('profile_edit') }}" class="btn secondary">Edit profile</a>{% endif %}
+  </div>
+
+  {% if upload and upload.status == 'review' %}
+    <div class="panel">
+      <p><strong>{{ upload.filename }}</strong> hasn't been sent yet.</p>
+      <p class="small muted mt-xs">Check which details are hidden from the LLM, then send it.</p>
+      <a href="{{ url_for('review_upload', upload_id=upload.id) }}" class="btn mt-md">Check and send</a>
+    </div>
+  {% elif upload and upload.status == 'parsing' %}
+    <div class="panel" id="parse-status" data-upload-id="{{ upload.id }}">
+      <p><span class="spinner" aria-hidden="true"></span> Reading <strong>{{ upload.filename }}</strong>…</p>
+      <p class="small muted mt-xs">{{ upload.text|length }} characters of text found. Turning them into a profile usually takes 10–60 seconds.</p>
+    </div>
+  {% elif upload and upload.status == 'failed' %}
+    <div class="panel">
+      <p class="error-text" role="alert"><strong>{{ upload.filename }} couldn't be read into a profile.</strong> {{ upload.error }}</p>
+      <form method="post" action="{{ url_for('profile_retry') }}" class="row mt-md">
+        <button type="submit">Retry</button>
+        <a href="{{ url_for('review_upload', upload_id=upload.id) }}" class="btn secondary">Check what's sent</a>
+        <a href="{{ url_for('settings') }}" class="btn ghost">LLM settings</a>
+        <a href="{{ url_for('log_page', ref=upload.id[:6]) }}" class="small">What happened (log)</a>
+      </form>
+    </div>
+  {% endif %}
+
+  {% if not profile %}
+    {% if not (upload and upload.status in ('parsing', 'review')) %}
+      <ol class="how mt-md">
+        <li><span><strong>Add your CV</strong><span class="muted">The text is read on this computer. You check which personal details are hidden, then it's sent to the LLM you choose in Settings to build your profile.</span></span></li>
+        <li><span><strong>Check your profile</strong><span class="muted">Edit anything it got wrong. Only these facts are used.</span></span></li>
+        <li><span><strong>Add jobs</strong><span class="muted">Each job gets its own tailored CV, with a preview and a fact check you can review.</span></span></li>
+      </ol>
+      <div class="mt-lg">{{ upload_form() }}</div>
+    {% endif %}
+  {% else %}
+    <div class="panel">
+      <h2 style="margin-bottom: 4px;">{{ profile.name or 'Name not found' }}</h2>
+      {% if profile.target_role %}<p>{{ profile.target_role }}</p>{% endif %}
+      <p class="muted">{{ [profile.email, profile.phone, profile.location]|select|join(' · ') or 'No contact details' }}</p>
+      {% if profile.links %}<p class="small mt-xs">{% for label, url in profile.links.items() %}<span class="muted">{{ label }}:</span> {{ url }}{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
+
+      <h3 class="mt-lg">Experience</h3>
+      {% for e in profile.experiences %}
+        <div class="role">
+          <div class="role-head">{{ e.title }} — {{ e.company }}</div>
+          <div class="small faint">{{ [e.location, (e.start ~ (' – ' if e.start else '') ~ ('Present' if e.current else (e.end or '')))]|select|join(' · ') }}</div>
+          {% if e.bullets %}<ul class="small">{% for b in e.bullets %}<li>{{ b }}</li>{% endfor %}</ul>{% endif %}
+        </div>
+      {% else %}
+        <p class="muted small">No roles yet. <a href="{{ url_for('profile_edit') }}">Add one</a></p>
+      {% endfor %}
+
+      <h3 class="mt-lg">Education</h3>
+      {% for e in profile.education %}
+        <div class="small">{{ [e.credential, e.field]|select|join(', ') }}{% if e.school %} — {{ e.school }}{% endif %}{% if e.dates %} <span class="faint">({{ e.dates }})</span>{% endif %}</div>
+      {% else %}
+        <p class="muted small">None.</p>
+      {% endfor %}
+
+      <h3 class="mt-lg">Skills</h3>
+      <p>{% for s in profile.skills %}<span class="tag {{ s.source }}" title="{{ {'cv': 'From your CV', 'clarification': 'Confirmed in your answers', 'user': 'Added by you'}[s.source] }}">{{ s.name }}</span>{% endfor %}</p>
+      <p class="small faint">
+        <span class="legend"><i></i>from your CV</span>
+        <span class="legend"><i class="clarification"></i>confirmed in answers</span>
+        <span class="legend"><i class="user"></i>added by you</span>
+      </p>
+
+      {% for key, label in extra_lists %}
+        {% if profile.extras.get(key) %}
+          <h3 class="mt-lg">{{ label }}</h3>
+          <ul class="dot-list small">{% for item in profile.extras[key] %}<li>{{ item }}</li>{% endfor %}</ul>
+        {% endif %}
+      {% endfor %}
+    </div>
+
+  {% endif %}
+
+{% endblock %}
+{% block dock_label %}Your CV files{% endblock %}
+{% block dock %}
+<div id="profile-dock">
+  <div class="dock-head"><h2 class="dock-title">Your CV files</h2><span class="small faint">Where your profile came from</span></div>
+  {% if profile %}
+    <section class="sub">
+      <h3 class="sub-title">Update from a CV file</h3>
+      <p class="small muted mb-sm">Read another CV into your profile: new roles, skills and details are added (or it replaces your profile, if you choose). You check what's hidden before anything is sent.</p>
+      {{ upload_form(compact=True) }}
+    </section>
+  {% else %}
+    <section class="sub">
+      <h3 class="sub-title">What happens to your CV</h3>
+      <ul class="dot-list small muted">
+        <li>Its text is read on this computer.</li>
+        <li>You see exactly what will be sent and tick what's hidden: your name, email, phone, address and links are swapped for placeholders.</li>
+        <li>The LLM you chose in Settings turns it into a profile; the placeholders are filled back in here.</li>
+        <li>You check the profile and correct anything it got wrong. Tailored CVs only ever use these facts.</li>
+      </ul>
+    </section>
+  {% endif %}
+  {% if uploads %}
+    <section class="sub">
+      <h3 class="sub-title">Source CVs <span class="count">{{ uploads|length }}</span></h3>
+      <p class="small muted">Files you uploaded. Deleting one removes the file; facts already in your profile stay until you edit them.</p>
+      <div class="table-wrap mt-sm">
+        <table class="table">
+          <thead><tr><th>File</th><th>Added</th><th>Read</th><th><span class="sr-only">Actions</span></th></tr></thead>
+          <tbody>
+            {% for u in uploads %}
+              <tr>
+                <td class="break">{{ u.filename }}</td>
+                <td class="small faint nowrap">{{ u.created_at|when }}</td>
+                <td class="small">
+                  {% if u.status == 'ready' and u.summary %}{{ (u.summary.get('roles') or [])|length }} roles, {{ (u.summary.get('skills') or [])|length }} skills
+                  {% elif u.status == 'parsing' %}<span class="pill analyzing">Reading</span>
+                  {% elif u.status == 'review' %}<a href="{{ url_for('review_upload', upload_id=u.id) }}">Not sent · check and send</a>
+                  {% else %}<span class="error-text">Failed</span>{% endif %}
+                </td>
+                <td class="small nowrap">
+                  <a href="{{ url_for('download_upload', upload_id=u.id) }}">Download</a>
+                  <form method="post" action="{{ url_for('delete_upload', upload_id=u.id) }}" style="display:inline" data-confirm="Delete {{ u.filename }} from this computer?">
+                    <span class="faint"> · </span><button type="submit" class="link-btn quiet-danger">Delete</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {% endif %}
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  (function () {
+    // Drag and drop onto the zone; stop the browser from opening a file dropped elsewhere.
+    ['dragover', 'drop'].forEach(function (evt) { window.addEventListener(evt, function (e) { e.preventDefault(); }); });
+    document.querySelectorAll('.upload-form').forEach(function (form) {
+      var zone = form.querySelector('.drop-zone'), input = form.querySelector('input[type=file]'), name = form.querySelector('.file-name');
+      var show = function () { name.textContent = input.files.length ? 'Selected: ' + input.files[0].name : ''; };
+      input.addEventListener('change', show);
+      zone.addEventListener('dragover', function () { zone.classList.add('dragging'); });
+      zone.addEventListener('dragleave', function () { zone.classList.remove('dragging'); });
+      zone.addEventListener('drop', function (e) { zone.classList.remove('dragging'); if (e.dataTransfer.files.length) { input.files = e.dataTransfer.files; show(); } });
+      form.addEventListener('submit', function () { var b = form.querySelector('button[type=submit]'); b.disabled = true; b.textContent = 'Uploading…'; });
+    });
+    var status = document.getElementById('parse-status');
+    if (status) CV.poll('/api/upload/' + status.dataset.uploadId, function (d) {
+      if (d.status !== 'parsing') { location.reload(); return false; }
+      return true;
+    });
+  })();
+</script>
+{% endblock %}
