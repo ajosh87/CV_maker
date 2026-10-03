@@ -1,0 +1,337 @@
+{% extends "base.html" %}
+{% block title %}Settings — CV Tailor{% endblock %}
+{% macro glance(tone, title, text, anchor, more='') -%}
+  <li><a href="#{{ anchor }}" class="glance-row plain" data-section="{{ anchor }}"><i class="nav-dot st-{{ tone }}" aria-hidden="true"></i>
+    <span class="glance-title">{{ title }}</span><span class="glance-text">{{ text }}{% if more %}<span class="faint"> · {{ more }}</span>{% endif %}</span></a></li>
+{%- endmacro %}
+{% block content %}
+  {% if request.args.get('next') %}{% set back = came_from(url_for('jobs'), 'Jobs') %}<a href="{{ back[0] }}" class="back">← {{ back[1] }}</a>{% endif %}
+  <div class="page-head">
+    <div>
+      <h1>Settings</h1>
+      <p class="lead">How the app is set up, at a glance. Pick a line to change it on the right; changes apply right away, and values saved here take priority over <code>.env</code>.</p>
+    </div>
+  </div>
+
+{% set providers = {'openai': 'OpenAI', 'azure': 'Azure OpenAI', 'bedrock': 'AWS Bedrock', 'ollama': 'Ollama (on this computer)', 'groq': 'Groq', 'openrouter': 'OpenRouter'} %}
+<div class="glance" id="glance">
+  <h2 class="sr-only">At a glance</h2>
+  <ul class="glance-list">
+    {{ glance('ok' if llm_configured else 'attn', 'LLM', (providers.get(settings.LLM_PROVIDER, settings.LLM_PROVIDER) ~ ' · ' ~ (settings.LLM_MODEL or 'no model')) if llm_configured else 'Not set up: CVs can\'t be read or written yet', 'llm', key_hint and 'key ' ~ key_hint.split(' ')[0]) }}
+    {{ glance('ok', 'Pace', (limits.rpm ~ ' a minute' if limits.rpm else 'no per-minute limit') ~ ' · ' ~ limits.concurrency ~ ' at a time', 'automation', used_today ~ ' requests today') }}
+    {% set auto = [] %}
+    {% if automation.SCAN_APPLICATIONS == '1' %}{% set _ = auto.append('checks applications') %}{% endif %}
+    {% if automation.PREP_AUTO == '1' %}{% set _ = auto.append('writes prep notes') %}{% endif %}
+    {% if automation.RESEARCH_AUTO == '1' %}{% set _ = auto.append('researches companies') %}{% endif %}
+    {% if automation.APPLY_ALONGSIDE == '1' %}{% set _ = auto.append('applies alongside') %}{% endif %}
+    {{ glance('ok' if auto else 'idle', 'Automation', ('By itself it ' ~ auto|join(', ')) if auto else 'Everything waits for you to ask', 'automation') }}
+    {{ glance('idle' if automation.RESEARCH_DEPTH == 'off' else 'ok', 'Company research', automation.RESEARCH_DEPTH|capitalize ~ (' · ' ~ chosen_sources|length ~ ' sources' if automation.RESEARCH_DEPTH != 'off' else ''), 'automation') }}
+    {{ glance('ok' if tavily_hint else 'idle', 'Tavily key', ('Saved (' ~ tavily_hint ~ ')') if tavily_hint else 'Not added (optional: news and what people say)', 'automation') }}
+    {{ glance('ok', 'Politeness', levels[automation.POLITENESS].label if automation.POLITENESS in levels else automation.POLITENESS, 'automation', 'how fast it visits websites') }}
+    {{ glance('ok' if engine else 'attn', 'Browser engine', 'Installed: applications can be checked and filled in' if engine else 'Not installed: pip install playwright, then python -m playwright install chromium', 'apply-assistant') }}
+    {{ glance('ok' if keychain else 'attn', 'Password store', (keychain ~ ' · ' ~ accounts|length ~ ' account' ~ ('' if accounts|length == 1 else 's')) if keychain else 'Not available: install the apply extras (pip install -e ".[apply]") to keep job-site passwords', 'apply-assistant') }}
+    {{ glance('ok', 'Privacy', 'Contact details always hidden' ~ (' · ' ~ never_send|length ~ ' more on the never-send list' if never_send else ''), 'privacy', sent_count ~ ' recent requests recorded') }}
+    {{ glance('bad' if problems.errors else 'attn' if problems.warnings else 'ok', 'Log', (problems.errors ~ ' error' ~ ('' if problems.errors == 1 else 's') ~ ', ' ~ problems.warnings ~ ' warning' ~ ('' if problems.warnings == 1 else 's') ~ ' in the last day') if problems.errors or problems.warnings else 'No errors or warnings in the last day', 'log') }}
+    {{ glance('idle', 'Appearance', themes[theme][0], 'appearance') }}
+    {{ glance('idle', 'Your data', counts.jobs ~ ' job' ~ ('' if counts.jobs == 1 else 's') ~ ' · ' ~ counts.documents ~ ' document' ~ ('' if counts.documents == 1 else 's'), 'your-data', 'on this computer') }}
+  </ul>
+</div>
+{% endblock %}
+{% block dock_label %}The setting you picked{% endblock %}
+{% block dock %}
+  <section id="llm" class="settings-section" data-section="llm">
+    <h2>LLM provider</h2>
+    <p class="small muted" style="margin-bottom: 16px;">Reads your CV and the job, and writes the tailored text. With Ollama everything stays on this computer.</p>
+    <form method="post" id="settings-form" autocomplete="off" class="panel">
+      <div class="grid-2">
+        <div class="field">
+          <label for="LLM_PROVIDER">Provider {% if sources.LLM_PROVIDER == 'env' %}<span class="faint">· from .env</span>{% endif %}</label>
+          <select id="LLM_PROVIDER" name="LLM_PROVIDER">
+            {% for value, label in [('openai', 'OpenAI'), ('azure', 'Azure OpenAI'), ('bedrock', 'AWS Bedrock'), ('ollama', 'Ollama (local, no key)'), ('groq', 'Groq'), ('openrouter', 'OpenRouter')] %}
+              <option value="{{ value }}" {{ 'selected' if settings.LLM_PROVIDER == value }}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="LLM_MODEL">Model {% if sources.LLM_MODEL == 'env' %}<span class="faint">· from .env</span>{% endif %}</label>
+          <input type="text" id="LLM_MODEL" name="LLM_MODEL" value="{{ settings.LLM_MODEL or '' }}" placeholder="e.g. gpt-4o, openai/gpt-4o-mini, llama3">
+        </div>
+      </div>
+      <div class="field" data-for="openai azure groq openrouter">
+        <label for="LLM_API_KEY">API key</label>
+        <input type="password" id="LLM_API_KEY" name="LLM_API_KEY" value="" autocomplete="new-password"
+               placeholder="{{ 'Saved key ' ~ key_hint ~ '. Leave blank to keep it' if key_hint else 'Paste your API key' }}">
+        {% if sources.LLM_API_KEY == 'settings' %}
+          <label class="check small mt-sm"><input type="checkbox" name="clear_api_key" value="1"> Remove the saved key when I save</label>
+        {% elif sources.LLM_API_KEY == 'env' %}
+          <p class="hint">This key comes from <code>.env</code>; remove it there.</p>
+        {% endif %}
+      </div>
+      <div class="field" data-for="azure">
+        <label for="AZURE_OPENAI_ENDPOINT">Azure endpoint</label>
+        <input type="text" id="AZURE_OPENAI_ENDPOINT" name="AZURE_OPENAI_ENDPOINT" value="{{ settings.AZURE_OPENAI_ENDPOINT or '' }}">
+      </div>
+      <div class="field" data-for="bedrock">
+        <label for="AWS_DEFAULT_REGION">AWS region</label>
+        <input type="text" id="AWS_DEFAULT_REGION" name="AWS_DEFAULT_REGION" value="{{ settings.AWS_DEFAULT_REGION or '' }}">
+      </div>
+      <div class="field" data-for="ollama">
+        <label for="OLLAMA_HOST">Ollama address</label>
+        <input type="text" id="OLLAMA_HOST" name="OLLAMA_HOST" value="{{ settings.OLLAMA_HOST or '' }}">
+      </div>
+      <div class="row mt-md">
+        <button type="submit">Save</button>
+        <button type="button" class="secondary" id="test-btn">Test connection</button>
+      </div>
+      <p class="small mt-sm" id="test-result" role="status" aria-live="polite"></p>
+    </form>
+  </section>
+
+  <section id="appearance" class="settings-section" data-section="appearance">
+    <h2>Appearance</h2>
+    <form method="post" action="{{ url_for('set_theme') }}" class="panel">
+      <div class="seg-choice" role="radiogroup" aria-label="Theme">
+        {% for key, t in themes.items() %}
+          <label class="choice-card"><input type="radio" name="theme" value="{{ key }}" {{ 'checked' if theme == key }} onchange="this.form.submit()">
+            <strong>{{ t[1] }} {{ t[0] }}</strong><span class="small muted">{{ t[2] }}</span></label>
+        {% endfor %}
+      </div>
+      <noscript><button type="submit" class="secondary mt-md">Save</button></noscript>
+      <p class="small faint mt-sm">Also on every page: the {{ themes[theme][1] }} button next to Settings switches between them.</p>
+    </form>
+  </section>
+
+  <section id="privacy" class="settings-section" data-section="privacy">
+    <h2>Privacy</h2>
+    <p class="small muted" style="margin-bottom: 16px;">Your name, email, phone, address and profile links are swapped for placeholders such as <code>[[NAME_1]]</code> before anything is sent, and put back on this computer afterwards. Your documents come out the same.</p>
+    <form method="post" action="{{ url_for('settings_privacy') }}" class="panel">
+      <div class="field">
+        <label for="never_send">Also never send (one per line)</label>
+        <textarea id="never_send" name="never_send" rows="3" placeholder="e.g. your street address, a client under NDA">{{ never_send|join('\n') }}</textarea>
+        <p class="hint">Found however it's capitalised or spaced, in every request, including job descriptions.</p>
+      </div>
+      <div class="row">
+        <button type="submit" class="secondary">Save list</button>
+        <a href="{{ url_for('sent_log') }}">See exactly what was sent</a>
+        <span class="small faint">{{ sent_count }} recent request{{ '' if sent_count == 1 else 's' }}</span>
+      </div>
+    </form>
+  </section>
+
+  <section id="automation" class="settings-section" data-section="automation">
+    <h2>Pace and automation</h2>
+    <form method="post" action="{{ url_for('settings_automation') }}" class="panel">
+      <h3>LLM pace</h3>
+      <p class="small muted" style="margin-bottom: 12px;">Keeps requests inside what your provider allows, so a key is never throttled or suspended for abuse. Leave a box empty to use the suggestion. {{ limits.suggested.why }}</p>
+      <div class="grid-3">
+        <div class="field">
+          <label for="LLM_RPM">Requests a minute</label>
+          <input type="text" id="LLM_RPM" name="LLM_RPM" value="{{ automation.LLM_RPM }}" placeholder="suggested: {{ limits.suggested.rpm or 'no limit' }}" inputmode="numeric">
+        </div>
+        <div class="field">
+          <label for="LLM_CONCURRENCY">At the same time</label>
+          <input type="text" id="LLM_CONCURRENCY" name="LLM_CONCURRENCY" value="{{ automation.LLM_CONCURRENCY }}" placeholder="suggested: {{ limits.suggested.concurrency }}" inputmode="numeric">
+        </div>
+        <div class="field">
+          <label for="LLM_DAILY_CAP">Requests a day</label>
+          <input type="text" id="LLM_DAILY_CAP" name="LLM_DAILY_CAP" value="{{ automation.LLM_DAILY_CAP }}" placeholder="suggested: {{ limits.suggested.daily or 'no cap' }}" inputmode="numeric">
+        </div>
+      </div>
+      <p class="small faint">In force: {{ limits.rpm or 'no' }} a minute · {{ limits.concurrency }} at a time · {{ limits.daily ~ ' a day' if limits.daily else 'no daily cap' }} · {{ used_today }} used today. When a provider says it's busy, the app waits as long as it asks, three times at most, instead of hammering it. Identical read-only requests (re-reading the same job or CV) reuse the earlier answer: 0 tokens.</p>
+
+      <h3 class="mt-lg">Automation</h3>
+      <label class="check mt-sm"><input type="checkbox" name="SCAN_APPLICATIONS" value="1" {{ 'checked' if automation.SCAN_APPLICATIONS == '1' }}>
+        Check what each application needs as soon as a job is analysed (read-only, no LLM tokens{{ '' if engine else '; needs the browser engine' }})</label>
+      <label class="check mt-sm"><input type="checkbox" name="APPLY_ALONGSIDE" value="1" {{ 'checked' if automation.APPLY_ALONGSIDE == '1' }}>
+        Tick “fill in the application while the CV is being written” by default (you can untick it for any job)</label>
+      <label class="check mt-sm"><input type="checkbox" name="PREP_AUTO" value="1" {{ 'checked' if automation.PREP_AUTO == '1' }}>
+        Write interview prep notes once the CV is written (one LLM request per job)</label>
+
+      <h3 class="mt-lg">Company research</h3>
+      <p class="small muted">A separate agent that gathers what's publicly available about each employer, with the source of every point. Shared by every job at the same company and kept for two weeks.</p>
+      <div class="seg-choice mt-sm" role="radiogroup" aria-label="How much research">
+        {% for value, label, about in [('off', 'Off', 'No company research.'),
+                                       ('simple', 'Simple', 'A Wikipedia summary, and links to the review sites you pick. No LLM tokens.'),
+                                       ('thorough', 'Thorough', 'Also Wikidata facts, the company\'s About page, Hacker News and (with your key) Tavily, organised with sources by one LLM request per company.')] %}
+          <label class="choice-card"><input type="radio" name="RESEARCH_DEPTH" value="{{ value }}" {{ 'checked' if automation.RESEARCH_DEPTH == value }}>
+            <strong>{{ label }}</strong><span class="small muted">{{ about }}</span></label>
+        {% endfor %}
+      </div>
+      <input type="hidden" name="sources_shown" value="1">
+      <div class="grid-2 mt-md">
+        <fieldset class="plain-fieldset">
+          <legend class="small muted">Read automatically</legend>
+          {% for key, src in research_sources.items() if src[1] %}
+            <label class="check mt-xs"><input type="checkbox" name="RESEARCH_SOURCES" value="{{ key }}" {{ 'checked' if key in chosen_sources }}>
+              <span>{{ src[0] }} <span class="small faint">· {{ src[2] }}</span>{% if key == 'tavily' and not tavily_hint %} <span class="small warn-text">· add your key below</span>{% endif %}</span></label>
+          {% endfor %}
+        </fieldset>
+        <fieldset class="plain-fieldset">
+          <legend class="small muted">Linked only <span class="info" tabindex="0" aria-describedby="linked-only">ⓘ<span class="tip" role="tooltip" id="linked-only">These sites' terms of use, or their robots.txt, don't allow automated reading, so the app never fetches them. It links to a search for the company; paste what you read there to have it summarised.</span></span></legend>
+          {% for key, src in research_sources.items() if not src[1] %}
+            <label class="check mt-xs"><input type="checkbox" name="RESEARCH_SOURCES" value="{{ key }}" {{ 'checked' if key in chosen_sources }}>
+              <span>{{ src[0] }} <span class="small faint">· {{ src[2] }}</span></span></label>
+          {% endfor %}
+        </fieldset>
+      </div>
+      <div class="field mt-md">
+        <label for="TAVILY_API_KEY">Your Tavily API key <span class="faint">· optional: news and what people say about working there</span></label>
+        <div class="row">
+          <input type="password" id="TAVILY_API_KEY" name="TAVILY_API_KEY" value="" autocomplete="new-password" style="flex: 1 1 260px; width: auto;"
+                 placeholder="{{ 'Saved key ' ~ tavily_hint ~ '. Leave blank to keep it' if tavily_hint else 'tvly-…' }}">
+          <button type="button" class="secondary sm" id="tavily-test">Test key</button>
+        </div>
+        {% if tavily_source == 'settings' %}<label class="check small mt-sm"><input type="checkbox" name="clear_tavily_key" value="1"> Remove the saved key when I save</label>
+        {% elif tavily_source == 'env' %}<p class="hint">This key comes from <code>.env</code>; remove it there.</p>{% endif %}
+        <p class="hint">Bring your own key from <a href="https://tavily.com" target="_blank" rel="noopener noreferrer">tavily.com ↗</a>, a search API built for AI tools (its free plan includes a monthly allowance of credits). Thorough research then makes two searches per company, 2 credits, sending only the company's name. The key stays in your settings file: never in the log, the export or a request to anyone but Tavily. Testing it uses no credits.</p>
+        <p class="small mt-xs" id="tavily-result" role="status" aria-live="polite"></p>
+      </div>
+      <label class="check mt-md"><input type="checkbox" name="RESEARCH_AUTO" value="1" {{ 'checked' if automation.RESEARCH_AUTO == '1' }}>
+        Research the company as soon as a job is analysed (otherwise only when you ask on the job's page)</label>
+
+      <h3 class="mt-lg">Politeness toward websites</h3>
+      <div class="row mt-sm">
+        <select id="POLITENESS" name="POLITENESS" aria-label="Politeness toward websites" style="max-width: 200px;">
+          {% for key, lv in levels.items() %}<option value="{{ key }}" {{ 'selected' if automation.POLITENESS == key }}>{{ lv.label }}</option>{% endfor %}
+        </select>
+        <span class="info" tabindex="0" aria-describedby="polite-info">ⓘ<span class="tip wide" role="tooltip" id="polite-info">
+          <table class="tip-table">
+            <thead><tr><th></th>{% for key, lv in levels.items() %}<th data-level="{{ key }}">{{ lv.label }}</th>{% endfor %}</tr></thead>
+            <tbody>
+              {% for field, label, unit in [('between', 'Between requests to one site', 's'), ('linkedin', 'Between requests to LinkedIn', 's'),
+                                            ('refusal_pause', 'Time off after a site says slow down', 'min'), ('field_pause_ms', 'Assistant: after each field', 'ms'),
+                                            ('page_pause_ms', 'Assistant: after each page', 'ms')] %}
+                <tr><td>{{ label }}</td>{% for key, lv in levels.items() %}<td data-level="{{ key }}">{{ '%g'|format(lv[field] / 60 if unit == 'min' else lv[field]) }}{{ ' ' ~ unit if unit }}</td>{% endfor %}</tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <span class="tip-note">Always: one request at a time per site, robots.txt respected for research, and the app never hides that it's automated.</span>
+        </span></span>
+        <span class="small faint">How fast the app visits job sites, applications and research sources.</span>
+      </div>
+      <div class="row mt-md">
+        <button type="submit" class="secondary">Save</button>
+      </div>
+    </form>
+    <form method="post" action="{{ url_for('clear_cache') }}" class="mt-sm">
+      <button type="submit" class="link-btn small">Forget reused answers</button>
+      <span class="small faint">(the next identical request goes to the LLM again)</span>
+    </form>
+  </section>
+
+  <section id="apply-assistant" class="settings-section" data-section="apply-assistant">
+    <h2>Apply assistant</h2>
+    <div class="panel">
+      <p class="small muted">The answers it may put on application forms, and accounts it helped you create on job sites. It runs a private browser on this computer; its cookies and sign-ins stay in your data folder.</p>
+      <a href="{{ url_for('apply_details_page') }}" class="btn secondary mt-md">Application details and accounts</a>
+    </div>
+  </section>
+
+  <section id="log" class="settings-section" data-section="log">
+    <h2>Log</h2>
+    <div class="panel">
+      <p class="small muted">Every step, warning and error, with the job it belongs to and the full traceback when something fails. Kept on this computer; your contact details, email addresses and API keys are masked in it.</p>
+      <div class="row mt-md">
+        <a href="{{ url_for('log_page', level='warnings' if problems.errors or problems.warnings else None) }}" class="btn secondary">Open the log</a>
+        <span class="small {{ 'error-text' if problems.errors else 'warn-text' if problems.warnings else 'faint' }}">
+          {% if problems.errors or problems.warnings %}{{ problems.errors }} error{{ '' if problems.errors == 1 else 's' }} and {{ problems.warnings }} warning{{ '' if problems.warnings == 1 else 's' }} in the last day{% else %}No errors or warnings in the last day{% endif %}</span>
+      </div>
+    </div>
+  </section>
+
+  <section id="your-data" class="settings-section" data-section="your-data">
+    <h2>Your data</h2>
+    <div class="panel">
+      <dl class="facts">
+        <dt>Stored in</dt><dd class="mono break">{{ data_dir }}</dd>
+        <dt>Contains</dt><dd>{{ 'Your profile, ' if counts.profile }}{{ counts.jobs }} job{{ '' if counts.jobs == 1 else 's' }}, {{ counts.documents }} document{{ '' if counts.documents == 1 else 's' }}, {{ counts.uploads }} uploaded CV{{ '' if counts.uploads == 1 else 's' }}, {{ counts.applications }} application{{ '' if counts.applications == 1 else 's' }}, these settings</dd>
+        <dt>Leaves this computer</dt><dd>Your work history, skills, job descriptions and answers go to the LLM provider above, with your contact details hidden (see Privacy). Job links are fetched from the job site with nothing about you. Company research sends only the company's name (to Wikipedia, Wikidata, Hacker News's search and, with your key, Tavily). When you use the apply assistant, the application goes to that employer's site, as if you filled it in yourself. No accounts, analytics or telemetry.</dd>
+      </dl>
+      <p class="small faint mt-md">
+        {% if data_source == 'DATA_DIR' %}Folder chosen by the DATA_DIR setting.
+        {% elif data_source == 'legacy' %}This is the older <code>data</code> folder inside the project (git-ignored). Set DATA_DIR or move it to keep personal data out of the project folder.
+        {% else %}Your own per-user folder, outside the app's code, so it's never part of the code or a git commit.{% endif %}
+        The app only answers to this computer.
+      </p>
+      <div class="row mt-md">
+        <a href="{{ url_for('export_data') }}" class="btn secondary">Export my data (.zip)</a>
+        <span class="small faint">Profile, jobs, every document and uploaded CV. Settings and API key are left out.</span>
+      </div>
+    </div>
+
+    <details class="mt-md">
+      <summary class="error-text">Delete all my data</summary>
+      <form method="post" action="{{ url_for('delete_all') }}" class="panel danger-zone mt-sm">
+        <p>Permanently removes your profile, all jobs, every CV and letter version, uploaded CV files, the never-send list, the record of what was sent, your application details, the assistant's browser data, and the job-site passwords it saved, from this computer. Export first if you might want them. Accounts on job sites themselves stay there.</p>
+        <label class="check mt-md"><input type="checkbox" name="include_settings" value="1"> Also delete these settings and the API key</label>
+        <div class="field mt-md">
+          <label for="confirm">Type <strong>DELETE</strong> to confirm</label>
+          <input type="text" id="confirm" name="confirm" autocomplete="off" style="max-width: 220px;">
+        </div>
+        <button type="submit" class="danger">Delete everything</button>
+      </form>
+    </details>
+  </section>
+{% endblock %}
+{% block scripts %}
+<script>
+  (function () {
+    // One setting at a time on the right: the line you pick on the left (or the one a link points at).
+    var sections = document.querySelectorAll('.settings-section'), rows = document.querySelectorAll('.glance-row');
+    function pick(key, keepHash) {
+      var found = false;
+      sections.forEach(function (sec) { var on = sec.dataset.section === key; sec.hidden = !on; found = found || on; });
+      if (!found) return pick('llm', keepHash);
+      rows.forEach(function (row) { row.classList.toggle('selected', row.dataset.section === key); row.setAttribute('aria-current', row.dataset.section === key ? 'true' : 'false'); });
+      if (!keepHash) history.replaceState(null, '', '#' + key);
+      var dock = document.getElementById('dock');
+      if (dock) dock.scrollTop = 0;
+    }
+    document.addEventListener('click', function (e) {
+      var row = e.target.closest('.glance-row');
+      if (!row) return;
+      e.preventDefault();
+      pick(row.dataset.section);
+      if (!window.matchMedia('(min-width: 1000px)').matches) document.getElementById('dock').scrollIntoView({behavior: 'smooth'});
+    });
+    var attention = document.querySelector('.glance-row .st-attn, .glance-row .st-bad');
+    pick(location.hash.slice(1) || (attention ? attention.closest('.glance-row').dataset.section : 'llm'), true);
+    window.addEventListener('hashchange', function () { pick(location.hash.slice(1), true); });
+
+    // The politeness tooltip highlights the level chosen in the box next to it.
+    var level = document.getElementById('POLITENESS');
+    var mark = function () {
+      document.querySelectorAll('.tip-table [data-level]').forEach(function (c) { c.classList.toggle('on', c.dataset.level === level.value); });
+    };
+    level.addEventListener('change', mark); mark();
+
+    // Show only the fields the chosen provider uses.
+    var provider = document.getElementById('LLM_PROVIDER');
+    var sync = function () {
+      document.querySelectorAll('[data-for]').forEach(function (f) { f.hidden = f.dataset.for.split(' ').indexOf(provider.value) === -1; });
+    };
+    provider.addEventListener('change', sync); sync();
+
+    document.getElementById('tavily-test').addEventListener('click', function () {
+      var btn = this, out = document.getElementById('tavily-result'), body = new FormData();
+      body.append('TAVILY_API_KEY', document.getElementById('TAVILY_API_KEY').value);
+      btn.disabled = true; out.className = 'small mt-xs muted'; out.textContent = 'Asking Tavily (no credits used)…';
+      fetch('{{ url_for("tavily_test") }}', {method: 'POST', body: body})
+        .then(function (r) { return r.json(); })
+        .then(function (d) { out.textContent = d.message; out.className = 'small mt-xs ' + (d.ok ? 'ok-text' : 'error-text'); })
+        .catch(function () { out.textContent = 'The test request failed.'; out.className = 'small mt-xs error-text'; })
+        .finally(function () { btn.disabled = false; });
+    });
+
+    document.getElementById('test-btn').addEventListener('click', function () {
+      var btn = this, out = document.getElementById('test-result');
+      btn.disabled = true; out.className = 'small mt-sm muted'; out.textContent = 'Testing with the values in the form…';
+      fetch('{{ url_for("settings_test") }}', {method: 'POST', body: new FormData(document.getElementById('settings-form'))})
+        .then(function (r) { return r.json(); })
+        .then(function (d) { out.textContent = d.message; out.className = 'small mt-sm ' + (d.ok ? 'ok-text' : 'error-text'); })
+        .catch(function () { out.textContent = 'The test request failed.'; out.className = 'small mt-sm error-text'; })
+        .finally(function () { btn.disabled = false; });
+    });
+  })();
+</script>
+{% endblock %}

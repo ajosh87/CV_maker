@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Paste descriptions — CV Tailor{% endblock %}
+{% block content %}
+  <a href="{{ url_for('jobs') }}" class="back">← Jobs</a>
+  <div class="page-head">
+    <div>
+      <h1>Paste descriptions</h1>
+      <p class="lead">These pages couldn't be read automatically. Open each posting, copy its description and paste it here. Leave a box empty to skip it.</p>
+    </div>
+  </div>
+  <form method="post">
+    {% for run in runs %}
+      <div class="panel">
+        <div class="spread">
+          <strong>{{ run.title or 'Job' }}{% if run.company %} <span class="muted">· {{ run.company }}</span>{% endif %}</strong>
+          {% if run.job_url %}<a href="{{ run.job_url }}" target="_blank" rel="noopener noreferrer" class="small">Open posting ↗</a>{% endif %}
+        </div>
+        {% if run.fetch_reason %}<p class="small muted mt-xs">{{ run.fetch_reason }}</p>{% endif %}
+        <label for="jd_{{ run.id }}" class="mt-md">Job description</label>
+        <textarea id="jd_{{ run.id }}" name="jd_{{ run.id }}" rows="6"></textarea>
+      </div>
+    {% endfor %}
+    <button type="submit" class="mt-md">Save and analyze</button>
+  </form>
+{% endblock %}
+{% block dock_label %}How to paste{% endblock %}
+{% block dock %}
+<div id="paste-dock">
+  <div class="dock-head"><h2 class="dock-title">How to paste a description</h2></div>
+  <ol class="how compact">
+    <li><span><strong>Open the posting</strong><span class="muted">Use its “Open posting” link; sign in there if the site asks.</span></span></li>
+    <li><span><strong>Copy the description</strong><span class="muted">Select from the job title to the end of the requirements and benefits, then Ctrl+C.</span></span></li>
+    <li><span><strong>Paste it on the left</strong><span class="muted">Its own box, then “Save and analyze”. Leave a box empty to skip that job.</span></span></li>
+  </ol>
+  <p class="small faint mt-md">The whole description helps: requirements, responsibilities and caveats such as a closing date or visa sponsorship all count.</p>
+</div>
+{% endblock %}

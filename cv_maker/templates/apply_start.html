@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% from "_macros.html" import scan_summary with context %}
+{% block title %}Apply — {{ run.title or 'Job' }} — CV Tailor{% endblock %}
+{% block content %}
+  <a href="{{ url_for('run_detail', run_id=run.id) }}" class="back">← {{ run.title or 'Job' }}</a>
+  <div class="page-head">
+    <div>
+      <h1>Apply with the assistant</h1>
+      <p class="lead">It fills in the application in a private browser on this computer. You watch it here, take over whenever you like, and you approve the final submit. Prefer to do it yourself? Your CV and letter are on the job's page.</p>
+    </div>
+  </div>
+
+  {% if not engine_ready %}
+    <div class="notice">The assistant needs a browser engine (about 150 MB, installed once):
+      <code>pip install playwright</code> then <code>python -m playwright install chromium</code>, then restart the app.</div>
+  {% endif %}
+
+
+  <form method="post" class="panel mt-md">
+    <div class="field">
+      <label for="start_url">Where does the application start?</label>
+      <input type="text" id="start_url" name="start_url" value="{{ start }}" placeholder="https://company.wd5.myworkdayjobs.com/…" required>
+      {% if linkedin_start %}
+        <p class="hint">This is the LinkedIn posting. LinkedIn allows no assistant to sign in or click there, so that part is yours: in the assistant's window, sign in if LinkedIn asks (only the first time: its browser remembers you), then click <strong>Apply</strong>. The assistant notices when you reach the company's site and carries on by itself. Have the company's own link? Paste it instead to skip LinkedIn.</p>
+      {% else %}
+        <p class="hint">The job posting or the company's own application page.</p>
+      {% endif %}
+    </div>
+    {% if versions|length > 1 %}
+      <div class="field">
+        <label for="version">Documents to attach</label>
+        <select id="version" name="version" style="max-width: 260px;">
+          {% for v in versions %}<option value="{{ v }}">v{{ v }}{{ ' (latest)' if loop.first }}</option>{% endfor %}
+        </select>
+      </div>
+    {% else %}
+      <input type="hidden" name="version" value="{{ versions[0] }}">
+      <p class="small muted">Attaches CV v{{ versions[0] }} (and its letter, if there is one).</p>
+    {% endif %}
+    <label class="check mt-sm"><input type="checkbox" name="show_window" value="1"> Also show the assistant's browser in its own window</label>
+    <div class="row mt-md">
+      <button type="submit" {{ 'disabled' if not engine_ready }}>Start</button>
+      <a href="{{ url_for('apply_details_page', next=request.path) }}" class="btn ghost">Application details</a>
+    </div>
+    {% if missing %}<p class="small warn-text mt-sm">Not saved yet: {{ missing|join(', ') }}. The assistant will ask when a form needs them.</p>{% endif %}
+  </form>
+
+{% endblock %}
+{% block dock_label %}What this application needs{% endblock %}
+{% block dock %}
+{% set scan = run.scan or {} %}
+<div id="apply-dock">
+  <div class="dock-head"><h2 class="dock-title">What this application needs</h2></div>
+  <section class="sub">
+    {% if scan.get('checked_at') and not scan.get('note') and not scan.get('error') %}
+      <p class="small muted mb-xs">From a read-only look at the application</p>
+      {{ scan_summary(scan, saved_sites) }}
+    {% else %}
+      <p class="small muted">{{ scan.get('note') or scan.get('error') or 'Not checked yet.' }} <a href="{{ url_for('run_detail', run_id=run.id) }}#before">Check it on the job's page</a> (read-only, no LLM tokens), or just start: the assistant tells you what it meets as it goes.</p>
+    {% endif %}
+  </section>
+  <section class="sub">
+    <h3 class="sub-title">What to expect</h3>
+    <ul class="dot-list small muted">
+      <li>Your contact details and saved answers are filled in by rule on this computer. The LLM reads the form's questions as text (never screenshots) and sees placeholders for your details.</li>
+      <li>It stops and asks when it isn't sure, when a site wants you to sign in or create an account, for CAPTCHAs, and when the application moves to another website.</li>
+      <li>Diversity questions are answered with "prefer not to say" when offered, otherwise left to you. Consent boxes are yours to tick; job-alert boxes stay unticked.</li>
+      <li>It never submits by itself. Open the nerdbar (<kbd>`</kbd>) to watch every step.</li>
+    </ul>
+  </section>
+  {% if applications %}
+    <section class="sub">
+      <h3 class="sub-title">Earlier attempts</h3>
+      <ul class="plain-list">
+        {% for a in applications %}
+          <li><a href="{{ url_for('application_page', app_id=a.id) }}">{{ a.created_at|when }}</a>
+            <span class="small muted">· v{{ a.version }} · {{ {'submitted': 'submitted', 'stopped': 'stopped', 'failed': 'failed', 'needs_you': 'waiting for you', 'working': 'working', 'starting': 'starting'}[a.status] }}</span></li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+</div>
+{% endblock %}

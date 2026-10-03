@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en" class="no-js"{% if theme in ('light', 'dark') %} data-theme="{{ theme }}"{% endif %}>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}CV Tailor{% endblock %}</title>
+  <link rel="icon" href="{{ url_for('static', filename='logo.svg') }}" type="image/svg+xml">
+  {#- Before the first paint: the halves' sizes and whether the nerdbar is open, so nothing jumps once the page shows. -#}
+  <script>
+    (function (root) {
+      root.classList.remove('no-js');
+      try {
+        if (localStorage.getItem('nerdbar.open') === '1') root.classList.add('nb-open');
+        var side = localStorage.getItem('layout.side'), nb = localStorage.getItem('layout.nerdbar');
+        if (side) root.style.setProperty('--side', side);
+        if (nb) root.style.setProperty('--nb', nb);
+      } catch (e) { /* private window: the defaults */ }
+    })(document.documentElement);
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+{#- Every page is two halves: what you're doing on the left, and on the right what helps you do it (a preview, the
+    posting, the live application, a status board), with the nerdbar below it when it's open. Pages fill the "dock"
+    block; it's declared here (never shown here) and rendered once, into the right half. -#}
+{% if false %}{% block dock %}{% endblock %}{% endif %}
+{% set dock_html = self.dock()|trim %}
+<body class="{% block body_class %}{% endblock %}">
+  <header class="site-header">
+    <div class="header-row">
+      <a href="{{ url_for('home') }}" class="brand"><img src="{{ url_for('static', filename='logo.svg') }}" alt="" width="24" height="24" class="brand-mark">CV Tailor</a>
+      <div class="header-end">
+        <nav class="main-nav" aria-label="Main">
+          {% for key, label in nav %}
+            <a href="{{ url_for(key) }}" class="{{ 'active' if section == key }}"{% if section == key %} aria-current="page"{% endif %}>{{ label }}</a>
+          {% endfor %}
+        </nav>
+        <form method="post" action="{{ url_for('set_theme') }}" class="theme-form">
+          <input type="hidden" name="next" value="{{ request.full_path }}">
+          <button type="submit" name="theme" value="{{ next_theme }}" class="ghost sm theme-btn"
+                  title="Theme: {{ themes[theme][0] }}. Click for {{ themes[next_theme][0] }}" aria-label="Theme: {{ themes[theme][0] }}. Switch to {{ themes[next_theme][0] }}">{{ themes[theme][1] }}</button>
+        </form>
+      </div>
+    </div>
+  </header>
+  <div class="workspace{{ ' has-dock' if dock_html }}" id="workspace" data-dock="{{ 'yes' if dock_html else 'no' }}">
+    <main class="pane pane-main" id="pane-main">
+      <div class="container {% block main_class %}{% endblock %}">
+        {% block crumbs %}{% endblock %}
+        {% if not llm_configured and section != 'settings' %}
+          <div class="notice">No LLM is set up yet, so CVs can't be read or written. <a href="{{ url_for('settings') }}">Choose one in Settings</a>.</div>
+        {% endif %}
+        {#- A message meant for one part of a page (category "error|part") is shown in that part when the page lists
+            it in `page_notes` (the parts it shows); anywhere else, here. -#}
+        <div id="flashes" data-part="flash">
+          {%- with messages = get_flashed_messages(with_categories=true) %}
+            {%- for category, msg in messages if not (page_notes and '|' in category and category.split('|')[1] in page_notes) %}
+              <div class="flash {{ 'error' if category.split('|')[0] == 'error' }}" role="{{ 'alert' if category.split('|')[0] == 'error' else 'status' }}">{{ msg }}</div>
+            {%- endfor %}
+          {%- endwith %}
+        </div>
+        {% block content %}{% endblock %}
+      </div>
+    </main>
+    <div class="gutter gutter-v" id="gutter-v" role="separator" aria-orientation="vertical" tabindex="0"
+         aria-label="Resize the two halves (drag, or use the arrow keys; double-click resets)"></div>
+    <aside class="pane pane-side" id="pane-side">
+      {% if dock_html %}<section class="dock" id="dock" aria-label="{% block dock_label %}Viewer{% endblock %}">{{ dock_html|safe }}</section>{% endif %}
+      <div class="gutter gutter-h" id="gutter-h" role="separator" aria-orientation="horizontal" tabindex="0"
+           aria-label="Resize the right half and the nerdbar (drag, or use the arrow keys; double-click resets)"></div>
+      <section class="nb-panel" id="nb-panel" aria-label="nerdbar">
+        <header class="nb-head">
+          <span class="nb-title">&gt;_ nerdbar</span>
+          <span class="nb-state"></span>
+          <button type="button" class="nb-btn push-right" data-act="follow" aria-pressed="true" title="Keep scrolling to the newest line">follow</button>
+          <button type="button" class="nb-btn" data-act="clear" title="Clear this view (the log keeps everything)">clear</button>
+          <button type="button" class="nb-btn" data-act="close" aria-label="Close the nerdbar" title="Close (press `)">✕</button>
+        </header>
+        <div class="nb-stats">
+          <div><span class="nb-k">running</span><span class="nb-v" data-stat="running">0</span></div>
+          <div><span class="nb-k">llm calls</span><span class="nb-v" data-stat="calls">0</span></div>
+          <div><span class="nb-k">tokens in · out</span><span class="nb-v" data-stat="tokens">0 · 0</span></div>
+          <div><span class="nb-k">sent to the llm</span><span class="nb-v" data-stat="sent">0 KB</span></div>
+        </div>
+        <div class="nb-tasks" data-stat="tasks"></div>
+        <div class="nb-log" role="log" aria-live="off"></div>
+        <footer class="nb-foot">Placeholders, never your details · <a href="{{ url_for('sent_log') }}">exact text sent</a> · <a href="{{ url_for('log_page') }}">full log</a></footer>
+      </section>
+    </aside>
+  </div>
+  <button type="button" class="nb-pill" id="nb-toggle" aria-controls="nb-panel" aria-expanded="false"
+          title="nerdbar: see what the app is doing (press `)"><span class="nb-dot" aria-hidden="true"></span>&gt;_ nerdbar<span class="nb-now"></span><span class="nb-count"></span></button>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ url_for('static', filename='layout.js') }}"></script>
+  <script src="{{ url_for('static', filename='nerdbar.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

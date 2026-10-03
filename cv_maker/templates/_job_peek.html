@@ -1,0 +1,46 @@
+{% from "_macros.html" import status_pill, next_action, host, badge with context %}
+{#- One job at a glance, in the job list's right half: where it is, the next thing to do, how each part stands. -#}
+{% set latest = versions[0] if versions else None %}
+<div class="peek" data-run="{{ run.id }}" data-version="{{ run.updated_at }}" data-busy="{{ busy|join(',') }}">
+  <div class="dock-head">
+    <button type="button" class="ghost sm" data-peek-close>← Add jobs</button>
+    <span class="small faint push-right">updated {{ run.updated_at|when }}</span>
+  </div>
+  <h2 class="peek-title"><a href="{{ url_for('run_detail', run_id=run.id) }}" class="plain">{{ run.title or ('Pasted job' if not run.job_url else 'Job') }}</a></h2>
+  <p class="small muted">{{ run.company or '' }}{% if run.company and run.job_url %} · {% endif %}{% if run.job_url %}<a href="{{ run.job_url }}" target="_blank" rel="noopener noreferrer">{{ host(run.job_url) }} ↗</a>{% endif %}</p>
+
+  {% set p = progress %}
+  <p class="small mt-sm">{% if run.status in ('fetching', 'analyzing', 'generating') %}<span class="spinner" aria-hidden="true"></span> {{ run.step or 'Working…' }}
+    {% elif run.status == 'failed' %}<span class="error-text">{{ run.error or 'Something went wrong.' }}</span>
+    {% elif run.status == 'needs_paste' %}{{ run.fetch_reason or 'There is no job description yet.' }}
+    {% elif p.done == p.total %}All {{ p.total }} steps done: applied.
+    {% else %}{{ p.done }} of {{ p.total }} steps done · next: {{ {'Job read': 'read the job', 'Analysed': 'analyse it', 'Your answers': 'your answers', 'CV written': 'write the CV', 'Applied': 'apply'}.get(p.current, p.current|lower) }}{% endif %}</p>
+  <div class="row mt-md">
+    {% if run.status == 'needs_answers' %}
+      <a href="{{ url_for('run_questions', run_id=run.id) }}" class="btn">{{ next_action(run)|striptags|trim }}</a>
+    {% elif run.status == 'needs_paste' %}
+      <a href="{{ url_for('run_detail', run_id=run.id) }}#paste" class="btn">Paste the description</a>
+    {% elif run.status == 'failed' %}
+      <a href="{{ url_for('run_detail', run_id=run.id) }}" class="btn">See what went wrong</a>
+    {% endif %}
+    <a href="{{ url_for('run_detail', run_id=run.id) }}" class="btn {{ 'secondary' if run.status in ('needs_answers', 'needs_paste', 'failed') }}">Open the job →</a>
+  </div>
+
+  <ul class="peek-parts mt-md">
+    {% for key, anchor, label in [('match', 'based-on', 'How you match'), ('versions', '', 'CV versions'), ('applying', 'before', 'Applying'),
+                                  ('prep', 'prep', 'Interview prep'), ('research', 'research', 'Company research')] if states.get(key) %}
+      <li><a href="{{ url_for('run_detail', run_id=run.id) }}{{ '#' ~ anchor if anchor }}" class="plain">{{ label }}</a>{{ badge(states[key]) }}</li>
+    {% endfor %}
+  </ul>
+
+  {% set must = gaps|selectattr('required')|list %}
+  {% if must %}
+    <h3 class="sub-title mt-md">Must-haves</h3>
+    <ul class="peek-must">
+      {% for g in must[:8] %}
+        <li class="m-{{ g.strength }}"><span class="m-term">{{ g.term }}</span><span class="m-bar" aria-hidden="true"><span style="width: {{ g.score }}%"></span></span><span class="m-score">{{ g.score }}</span></li>
+      {% endfor %}
+    </ul>
+    {% if must|length > 8 %}<p class="small faint mt-xs">and {{ must|length - 8 }} more on <a href="{{ url_for('run_detail', run_id=run.id) }}#based-on">the job's page</a></p>{% endif %}
+  {% endif %}
+</div>

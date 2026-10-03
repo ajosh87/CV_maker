@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}Documents — CV Tailor{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+  <div class="page-head">
+    <div>
+      <h1>Documents</h1>
+      <p class="lead">Every CV and letter version, and the CV files you uploaded. Nothing is overwritten; delete what you don't need.</p>
+    </div>
+  </div>
+
+  <nav class="seg" aria-label="Document type">
+    {% for key, label in kinds %}
+      <a href="{{ url_with(kind=None if key == 'all' else key) }}" class="{{ 'active' if data.kind == key }}">{{ label }}<span class="count">{{ data.counts.get(key, 0) }}</span></a>
+    {% endfor %}
+  </nav>
+
+  <form method="get" class="toolbar" id="filters" role="search">
+    {% if data.kind != 'all' %}<input type="hidden" name="kind" value="{{ data.kind }}">{% endif %}
+    {% if args.get('job') %}<input type="hidden" name="job" value="{{ args.get('job') }}">{% endif %}
+    <label for="q" class="sr-only">Search documents</label>
+    <input type="search" id="q" name="q" value="{{ args.get('q', '') }}" placeholder="Search job, company or file name">
+    <label for="company" class="sr-only">Company</label>
+    <select id="company" name="company">
+      <option value="">All companies</option>
+      {% for c in data.companies %}<option value="{{ c }}" {{ 'selected' if args.get('company') == c }}>{{ c }}</option>{% endfor %}
+    </select>
+    <label for="sort" class="sr-only">Sort</label>
+    <select id="sort" name="sort">{% for key, label in sorts %}<option value="{{ key }}" {{ 'selected' if data.sort == key }}>{{ label }}</option>{% endfor %}</select>
+    <label for="group" class="sr-only">Group by</label>
+    <select id="group" name="group">{% for key, label in groups %}<option value="{{ key }}" {{ 'selected' if data.group == key }}>{{ 'Group by ' ~ label|lower if key != 'none' else 'No grouping' }}</option>{% endfor %}</select>
+    <label class="check"><input type="checkbox" name="latest" value="1" {{ 'checked' if args.get('latest') == '1' }}> Latest only</label>
+    <label class="check"><input type="checkbox" name="archived" value="1" {{ 'checked' if args.get('archived') == '1' }}> Include archived</label>
+    <button type="submit" class="secondary sm">Search</button>
+    {% if args %}<a href="{{ url_for('documents') }}" class="small quiet">Clear</a>{% endif %}
+  </form>
+
+  {% if data.job %}
+    <p class="small">Showing files for <a href="{{ url_for('run_detail', run_id=data.job.id) }}">{{ data.job.title or 'this job' }}</a> · <a href="{{ url_with(job=None) }}" class="quiet">show all</a></p>
+  {% endif %}
+
+  {% if not data.rows %}
+    <p class="muted mt-md">
+      {% if data.counts.get('all', 0) == 0 and not args %}Nothing yet. Tailored CVs and letters appear here once you write them; uploaded CVs appear as source CVs.
+      {% else %}No documents match. <a href="{{ url_for('documents') }}">Clear filters</a>{% endif %}
+    </p>
+  {% endif %}
+
+  {% for label, link, rows in data.groups if rows %}
+    {% if label %}
+      <h2 class="group-head">
+        {% if link == 'job' %}<a href="{{ url_for('run_detail', run_id=rows[0].run_id) }}" class="plain">{{ label }}</a>
+        {% elif link == 'company' %}<a href="{{ url_with(company=label, group=None) }}" class="plain">{{ label }}</a>
+        {% else %}{{ label }}{% endif %}<span class="count">{{ rows|length }}</span>
+      </h2>
+    {% endif %}
+    <div class="table-wrap">
+      <table class="table">
+        {% set show_for = data.group != 'job' %}
+        <thead><tr><th>Document</th>{% if show_for %}<th>For</th>{% endif %}<th><span class="sr-only">Actions</span></th></tr></thead>
+        <tbody>
+          {% for r in rows %}
+            <tr class="{{ '' if r.is_latest else 'older' }}" data-preview-url="{{ url_for('upload_preview', upload_id=r.id) if r.kind == 'source' else url_for('document_preview', doc_id=r.id) }}">
+              <td>
+                {% if r.kind == 'source' %}<span class="row-title break">{{ r.filename }}</span>
+                  <div class="small faint">Source CV{% if r.status != 'ready' %} · {{ r.status }}{% endif %} · {{ r.created_at|when }}</div>
+                {% else %}<span class="row-title nowrap">{{ r.kind_label }} <span class="mono small">v{{ r.version }}</span></span>
+                  <div class="small faint">{{ 'latest' if r.is_latest else 'older' }} · {{ r.created_at|when }}</div>{% endif %}
+              </td>
+              {% if show_for %}<td class="small">
+                {% if r.kind == 'source' %}
+                  {% if r.meta and r.meta.get('name') %}{{ r.meta.get('name') }} · {{ (r.meta.get('roles') or [])|length }} roles{% else %}<span class="faint">—</span>{% endif %}
+                {% else %}
+                  <a href="{{ url_for('run_detail', run_id=r.run_id) }}" class="plain">{{ r.title|truncate(60, True) }}</a>
+                  {% if r.company %}<div><a href="{{ url_with(company=r.company) }}" class="quiet">{{ r.company }}</a></div>{% endif %}
+                {% endif %}
+              </td>{% endif %}
+              <td class="small nowrap">
+                {% if r.kind == 'source' %}
+                  <a href="{{ url_for('upload_preview', upload_id=r.id) }}" data-doc-preview="{{ url_for('upload_preview', upload_id=r.id) }}">Preview</a>
+                  <span class="faint"> · </span><a href="{{ url_for('download_upload', upload_id=r.id) }}">Download</a>
+                  <form method="post" action="{{ url_for('delete_upload', upload_id=r.id) }}" style="display:inline" data-confirm="Delete {{ r.filename }} from this computer?"><span class="faint"> · </span><button type="submit" class="link-btn quiet-danger">Delete</button></form>
+                {% else %}
+                  <a href="{{ url_for('run_detail', run_id=r.run_id) }}" data-doc-preview="{{ url_for('document_preview', doc_id=r.id) }}">Preview</a>
+                  <span class="faint"> · </span><a href="{{ url_for('download_document', doc_id=r.id) }}">Download</a>
+                  <form method="post" action="{{ url_for('delete_document', doc_id=r.id) }}" style="display:inline" data-confirm="Delete this {{ r.kind_label|lower }} (v{{ r.version }}) from this computer?">
+                    <input type="hidden" name="next" value="{{ request.full_path }}"><span class="faint"> · </span><button type="submit" class="link-btn quiet-danger">Delete</button>
+                  </form>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endfor %}
+{% endblock %}
+{% block dock_label %}Preview{% endblock %}
+{% block dock %}
+<div id="doc-dock">
+  <div id="doc-preview" aria-live="polite" hidden></div>
+  <div id="doc-intro">
+    <div class="dock-head"><h2 class="dock-title">Preview</h2></div>
+    <p class="muted">Click a document on the left to read it here: a CV with its ATS score and your original wording next to each rewritten bullet, a letter, or the text read from a CV you uploaded.</p>
+    <p class="small faint mt-md">All on this computer, never overwritten. <a href="{{ url_for('export_data') }}">Export them all (.zip)</a></p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  (function () {
+    var filters = document.getElementById('filters');
+    filters.querySelectorAll('select, input[type=checkbox]').forEach(function (el) { el.addEventListener('change', function () { filters.submit(); }); });
+
+    // Preview on the right: a link marked data-doc-preview, or anywhere on a document's row.
+    var box = document.getElementById('doc-preview'), intro = document.getElementById('doc-intro'), current = null;
+    var preview = function (url, scroll) {
+      current = url;
+      try { sessionStorage.setItem('docs.preview', url); } catch (e) { /* private window */ }
+      document.querySelectorAll('tr[data-preview-url]').forEach(function (tr) { tr.classList.toggle('selected', tr.dataset.previewUrl === url); });
+      fetch(url, {headers: {'X-Requested-With': 'preview'}})
+        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
+        .then(function (html) {
+          if (current !== url) return;
+          box.innerHTML = html; box.hidden = false; intro.hidden = true;
+          if (scroll && !window.matchMedia('(min-width: 1000px)').matches) document.getElementById('dock').scrollIntoView({behavior: 'smooth'});
+        })
+        .catch(function () { if (current === url) { box.hidden = true; intro.hidden = false; } });
+    };
+    document.addEventListener('click', function (e) {
+      var link = e.target.closest('[data-doc-preview]');
+      if (link) { e.preventDefault(); preview(link.dataset.docPreview, true); return; }
+      var tr = e.target.closest('tr[data-preview-url]');
+      if (tr && !e.target.closest('a, button, input, form, label')) preview(tr.dataset.previewUrl, true);
+    });
+    var saved = null;
+    try { saved = sessionStorage.getItem('docs.preview'); } catch (e) { /* private window */ }
+    if (saved && document.querySelector('tr[data-preview-url="' + CSS.escape(saved) + '"]')) preview(saved);
+  })();
+</script>
+{% endblock %}
