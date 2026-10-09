@@ -1,0 +1,87 @@
+{% macro status_pill(run) -%}
+  <span class="pill {{ run.status }}">{{ status_labels.get(run.status, run.status) }}</span>
+{%- endmacro %}
+
+{# The one thing the user can do next for a job, in words that say what happens. #}
+{% macro next_action(run, versions=0, compact=False) -%}
+  {% if run.status in ('fetching', 'analyzing', 'generating') %}
+    <span class="small muted">{{ run.step or 'Working…' }}</span>
+  {% elif run.status == 'needs_paste' %}
+    <a href="{{ url_for('run_detail', run_id=run.id) }}#paste">Paste description</a>
+  {% elif run.status == 'needs_answers' %}
+    {% set n = run.questions|length %}
+    <a href="{{ url_for('run_questions', run_id=run.id) }}">{{ ('Answer ' ~ n ~ ' question' ~ ('' if n == 1 else 's')) if n else 'Write CV' }}</a>
+  {% elif run.status == 'ready' %}
+    <a href="{{ url_for('download_cv', run_id=run.id) }}">Download CV</a>{% if versions > 1 and compact %} <span class="small faint">v{{ versions }}</span>{% endif %}
+    {% if run.letter_path %}<span class="faint"> · </span><a href="{{ url_for('download_letter', run_id=run.id) }}">Letter</a>{% endif %}
+  {% elif run.status == 'failed' %}
+    <a href="{{ url_for('run_detail', run_id=run.id) }}" class="error-text">See what went wrong</a>
+  {% endif %}
+{%- endmacro %}
+
+{% macro host(url) -%}{{ (url or '').split('//')[-1].split('/')[0].replace('www.', '') }}{%- endmacro %}
+
+{# Where one part of a page stands (progress.section_states): a coloured badge on its header. #}
+{% macro badge(state) -%}
+  {% if state %}<span class="state st-{{ state.tone }}">{{ state.label }}</span>{% endif %}
+{%- endmacro %}
+
+{# Messages for one part of a page, shown in that part: the answer to the button you just pressed there. #}
+{% macro section_notes(key) -%}
+  {% for category, msg in get_flashed_messages(with_categories=true) if category.endswith('|' ~ key) %}
+    <p class="sec-note {{ 'error' if category.startswith('error') }}" role="{{ 'alert' if category.startswith('error') else 'status' }}">{{ msg }}</p>
+  {% endfor %}
+{%- endmacro %}
+
+{# What a read-only look at an application found (tasks._scan), as a list. On the job's page and before you start
+   the assistant. #}
+{% macro scan_summary(scan, saved_sites=(), has_letter=False) -%}
+  <ul class="needs-list">
+    {% if scan.sites|length > 1 %}<li>Runs on {{ scan.sites|join(' → ') }}</li>{% elif scan.sites %}<li>Runs on {{ scan.sites[0] }}</li>{% endif %}
+    {% if scan.account %}<li class="attn">Needs {{ 'a new account' if scan.account.creating else 'you to sign in' }} on {{ scan.account.site }}{% if scan.account.options %} ({{ scan.account.options|join(', ') }}){% endif %}.
+      {% if saved_sites and scan.account.site in saved_sites %}You have a saved account there: the assistant can sign you in.{% else %}You do this in the assistant's live view (or <a href="{{ url_for('apply_details_page', next=request.path) }}#accounts">save the account</a> so the assistant can). Google sign-in usually refuses automated browsers, so email is the safer choice.{% endif %}</li>{% endif %}
+    {% if scan.captcha %}<li class="attn">Shows a CAPTCHA, which you solve in the live view.</li>{% endif %}
+    {% for d in scan.documents %}
+      <li>Asks for {{ d.what|lower if d.what in ('CV', 'Cover letter') else d.what }}{{ ' (required)' if d.required }}{% if d.what == 'Cover letter' and d.required and not has_letter %}: none written yet, so tick “Also write a cover letter” (applying alongside adds one automatically){% endif %}</li>
+    {% endfor %}
+    {% if scan.questions %}
+      {% set unsaved = scan.questions|rejectattr('saved')|list %}
+      <li>{{ scan.questions|length }} question{{ 's' if scan.questions|length != 1 }} on the first form page, {{ scan.questions|length - unsaved|length }} answered from your saved details.
+        {% if unsaved %}You'll be asked: {{ unsaved|map(attribute='label')|join('; ') }}. <a href="{{ url_for('apply_details_page', next=request.path) }}">Save answers now</a>{% endif %}</li>
+    {% endif %}
+    {% if scan.diversity %}<li>Has voluntary diversity questions: the assistant answers “prefer not to say” where offered.</li>{% endif %}
+    {% if scan.consent %}<li class="attn">Has boxes only you can tick: {{ scan.consent|join('; ') }}</li>{% endif %}
+    {% for l in scan.links %}<li><a href="{{ l.href }}" target="_blank" rel="noopener noreferrer">{{ l.text }} ↗</a></li>{% endfor %}
+  </ul>
+  <p class="small faint mt-xs">Checked {{ scan.checked_at|when }}{% if scan.stopped_at == 'account' %}; it stopped at the sign-in, so later pages may ask for more{% endif %}.</p>
+{%- endmacro %}
+
+{# A CV version as text, the way the DOCX reads; rewritten bullets carry your original wording (shown with the
+   orig-toggle). On the job's page and in Documents. #}
+{% macro cv_paper(draft, rewrites=[]) -%}
+<div class="paper">
+  <div class="name">{{ draft.get('name') }}</div>
+  {% if draft.get('headline') %}<div>{{ draft.get('headline') }}</div>{% endif %}
+  <div class="meta">{{ (draft.get('contact') or [])|join(' | ') }}</div>
+  {% if draft.get('summary') %}<h4>Summary</h4><p>{{ draft.get('summary') }}</p>{% endif %}
+  <h4>Skills</h4><p>{{ (draft.get('skills') or [])|join(', ') }}</p>
+  <h4>Experience</h4>
+  {% for e in draft.get('experiences') or [] %}
+    {% set role = e.title ~ ' — ' ~ e.company %}
+    <p class="mt-sm"><strong>{{ e.title }} — {{ e.company }}</strong><br>
+      <span class="meta">{{ [e.location, (e.start ~ (' – ' if e.start else '') ~ ('Present' if e.current else (e.end or '')))]|select|join(' | ') }}</span></p>
+    <ul>
+      {% for b in e.bullets %}
+        {% set pair = rewrites|selectattr('role', 'equalto', role)|selectattr('final', 'equalto', b)|first %}
+        <li>{% if pair and pair.original != b %}<span class="changed">{{ b }}</span><span class="orig">Original: {{ pair.original }}</span>{% else %}{{ b }}{% endif %}</li>
+      {% endfor %}
+    </ul>
+  {% endfor %}
+  {% if draft.get('education') %}<h4>Education</h4>
+    {% for e in draft.get('education') %}<div>{{ [e.credential, e.field]|select|join(', ') }}{% if e.school %} — {{ e.school }}{% endif %}{% if e.dates %} ({{ e.dates }}){% endif %}</div>{% endfor %}
+  {% endif %}
+  {% for key, heading in [('certifications', 'Certifications'), ('projects', 'Projects'), ('languages', 'Languages')] %}
+    {% if (draft.get('extras') or {}).get(key) %}<h4>{{ heading }}</h4><ul>{% for item in draft.extras[key] %}<li>{{ item }}</li>{% endfor %}</ul>{% endif %}
+  {% endfor %}
+</div>
+{%- endmacro %}

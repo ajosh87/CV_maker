@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+{% from "_macros.html" import next_action with context %}
+{% block title %}Jobs — CV Tailor{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+  <div class="page-head">
+    <div>
+      <h1>Jobs</h1>
+      {% if any_jobs %}<p class="lead">Each job gets its own tailored CV. Open one to see its versions and what it was based on.</p>{% endif %}
+    </div>
+  </div>
+
+  {% if not has_profile %}
+    <div class="panel">
+      <h2>Start with your CV</h2>
+      <p class="muted">CV Tailor needs your profile before it can tailor anything.</p>
+      {% if upload and upload.status == 'parsing' %}
+        <p class="mt-md"><span class="spinner" aria-hidden="true"></span> Reading <strong>{{ upload.filename }}</strong>… <a href="{{ url_for('profile') }}">Watch progress</a></p>
+      {% elif upload and upload.status == 'review' %}
+        <a href="{{ url_for('review_upload', upload_id=upload.id) }}" class="btn mt-md">Check and send {{ upload.filename }}</a>
+      {% else %}
+        <a href="{{ url_for('profile') }}" class="btn mt-md">Add your CV</a>
+      {% endif %}
+    </div>
+  {% else %}
+    {% if not any_jobs %}
+      <ol class="how mt-lg">
+        <li><span><strong>Add a job link</strong><span class="muted">The posting is read and its requirements are compared with your profile.</span></span></li>
+        <li><span><strong>Confirm what's missing</strong><span class="muted">You're asked only about requirements your CV doesn't show. Nothing you don't confirm is added.</span></span></li>
+        <li><span><strong>Download your CV</strong><span class="muted">Every version is kept, with a preview and a note of anything the fact check changed.</span></span></li>
+      </ol>
+    {% endif %}
+  {% endif %}
+
+  {% if any_jobs %}
+    <div class="mt-lg">
+      {% if overall.jobs > 1 %}
+        {% set names = {'applied': 'applied', 'ready': 'ready to apply', 'working': 'in progress', 'you': 'need you', 'failed': 'failed'} %}
+        <div class="overall mb-md" id="overall">
+          <div class="spread small">
+            <span><strong id="ov-percent">{{ overall.percent }}%</strong> of the way, across <span id="ov-jobs">{{ overall.jobs }}</span> jobs</span>
+            <span class="muted" id="ov-counts">{% for key, name in names.items() if overall.counts[key] %}<span class="nowrap"><i class="legend-dot {{ key }}"></i>{{ overall.counts[key] }} {{ name }}</span>{{ ' · ' if not loop.last }}{% endfor %}</span>
+          </div>
+          <div class="progress-bar" role="progressbar" aria-label="All jobs" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ overall.percent }}" id="ov-bar"><span style="width: {{ overall.percent }}%"></span></div>
+          <p class="small faint mt-xs">Each job goes: job read → analysed → your answers → CV written → applied. Archived jobs aren't counted.</p>
+        </div>
+      {% endif %}
+      <nav class="seg" aria-label="Job status">
+        {% for key, label in buckets %}
+          <a href="{{ url_with(bucket=None if key == 'all' else key) }}" class="{{ 'active' if data.bucket == key }}">{{ label }}<span class="count">{{ data.counts.get(key, 0) }}</span></a>
+        {% endfor %}
+      </nav>
+
+      <form method="get" class="toolbar" id="filters" role="search">
+        {% if data.bucket != 'all' %}<input type="hidden" name="bucket" value="{{ data.bucket }}">{% endif %}
+        <label for="q" class="sr-only">Search jobs</label>
+        <input type="search" id="q" name="q" value="{{ args.get('q', '') }}" placeholder="Search title, company or link">
+        <label for="company" class="sr-only">Company</label>
+        <select id="company" name="company">
+          <option value="">All companies</option>
+          {% for c in data.companies %}<option value="{{ c }}" {{ 'selected' if args.get('company') == c }}>{{ c }}</option>{% endfor %}
+        </select>
+        <label for="sort" class="sr-only">Sort</label>
+        <select id="sort" name="sort">
+          {% for key, label in sorts %}<option value="{{ key }}" {{ 'selected' if data.sort == key }}>{{ label }}</option>{% endfor %}
+        </select>
+        <button type="submit" class="secondary sm">Search</button>
+        {% if args.get('q') or args.get('company') or args.get('sort') %}<a href="{{ url_with(q=None, company=None, sort=None) }}" class="small quiet">Clear</a>{% endif %}
+      </form>
+
+      {% set need_paste = data.rows|selectattr('run.status', 'equalto', 'needs_paste')|list %}
+      {% if need_paste|length > 1 %}
+        <p class="small mt-sm">{{ need_paste|length }} jobs need a description. <a href="{{ url_for('paste') }}">Paste them on one page</a></p>
+      {% endif %}
+
+      {% if data.rows %}
+        <form method="post" action="{{ url_for('jobs_bulk') }}" id="bulk" class="mt-sm">
+          <input type="hidden" name="next" value="{{ request.full_path }}">
+          <div class="bulk-bar" id="bulk-bar">
+            <span id="bulk-count">Selected</span>
+            {% if data.bucket == 'archived' %}
+              <button type="submit" name="action" value="unarchive" class="secondary sm">Restore</button>
+            {% else %}
+              <button type="submit" name="action" value="archive" class="secondary sm">Archive</button>
+            {% endif %}
+            <button type="submit" name="action" value="delete" class="danger sm" data-confirm="Delete the selected jobs and all their CV and letter versions? This can't be undone.">Delete</button>
+          </div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr>
+                <th class="check-cell"><input type="checkbox" id="select-all" aria-label="Select all"></th>
+                <th>Job</th><th>Status</th><th>Next step</th><th>Updated</th>
+              </tr></thead>
+              <tbody>
+                {% for row in data.rows %}{% include "_job_row.html" %}{% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </form>
+      {% elif data.bucket != 'archived' and data.counts.get('archived', 0) and not data.counts.get(data.bucket, 0) %}
+        <p class="muted mt-md">Nothing here. {{ data.counts.archived }} archived job{{ '' if data.counts.archived == 1 else 's' }} are under <a href="{{ url_with(bucket='archived') }}">Archived</a>.</p>
+      {% else %}
+        <p class="muted mt-md">No jobs match. <a href="{{ url_for('jobs') }}">Show all jobs</a></p>
+      {% endif %}
+    </div>
+  {% endif %}
+{% endblock %}
+{% block dock_label %}Add jobs{% endblock %}
+{% block dock %}
+<div id="jobs-dock">
+  <div id="peek-holder" aria-live="polite" hidden></div>
+  <div id="add-panel">
+    {% if has_profile %}
+      <section id="add">
+        <div class="dock-head"><h2 class="dock-title">Add jobs</h2>{% if any_jobs %}<span class="small faint">Click a job on the left to see it here instead.</span>{% endif %}</div>
+        <form method="post" id="jobs-form">
+          <div class="field">
+            <label for="urls">Job links, one per line</label>
+            <textarea id="urls" name="urls" rows="4" placeholder="https://www.linkedin.com/jobs/view/1234567890/">{{ form.get('urls', '') }}</textarea>
+            <p class="hint">LinkedIn links work, including search links. If a page can't be read, you'll be asked to paste the description.</p>
+          </div>
+          <details {% if form.get('pasted_jd') %}open{% endif %}>
+            <summary class="small">No link? Paste a description instead</summary>
+            <div class="field mt-sm">
+              <label for="pasted_title">Job title (optional)</label>
+              <input type="text" id="pasted_title" name="pasted_title" value="{{ form.get('pasted_title', '') }}">
+            </div>
+            <div class="field">
+              <label for="pasted_jd">Job description</label>
+              <textarea id="pasted_jd" name="pasted_jd" rows="6">{{ form.get('pasted_jd', '') }}</textarea>
+            </div>
+          </details>
+          <div class="row mt-md"><button type="submit" id="jobs-btn">Add</button></div>
+        </form>
+      </section>
+    {% else %}
+      <div class="dock-head"><h2 class="dock-title">How it works</h2></div>
+      <ol class="how compact">
+        <li><span><strong>Add your CV</strong><span class="muted">It's read into a profile on this computer; you check what's hidden before anything is sent.</span></span></li>
+        <li><span><strong>Add job links</strong><span class="muted">Each posting is read and compared with your profile.</span></span></li>
+        <li><span><strong>Answer, download, apply</strong><span class="muted">Only about what your CV doesn't show; every CV is written for the job's applicant tracking system.</span></span></li>
+      </ol>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  (function () {
+    var filters = document.getElementById('filters');
+    if (filters) filters.querySelectorAll('select').forEach(function (el) { el.addEventListener('change', function () { filters.submit(); }); });
+
+    var jobsForm = document.getElementById('jobs-form');
+    if (jobsForm) jobsForm.addEventListener('submit', function () { var b = document.getElementById('jobs-btn'); b.disabled = true; b.textContent = 'Adding…'; });
+
+    // Bulk actions appear only once something is selected.
+    var bulk = document.getElementById('bulk');
+    if (bulk) {
+      var bar = document.getElementById('bulk-bar'), count = document.getElementById('bulk-count'), all = document.getElementById('select-all');
+      var checks = function () { return bulk.querySelectorAll('.row-check'); };
+      var sync = function () {
+        var n = Array.prototype.filter.call(checks(), function (c) { return c.checked; }).length;
+        bar.classList.toggle('show', n > 0);
+        count.textContent = n + ' selected';
+        all.checked = n > 0 && n === checks().length; all.indeterminate = n > 0 && n < checks().length;
+      };
+      all.addEventListener('change', function () { checks().forEach(function (c) { c.checked = all.checked; }); sync(); });
+      bulk.addEventListener('change', function (e) { if (e.target.classList.contains('row-check')) sync(); });
+
+      // Live status for jobs that are being fetched, analyzed or written, or have work running in the background.
+      var activeStates = ['fetching', 'analyzing', 'generating'];
+      var activeIds = function () {
+        return Array.prototype.filter.call(bulk.querySelectorAll('tbody tr'), function (tr) {
+          return activeStates.indexOf(tr.dataset.status) !== -1 || tr.dataset.busy;
+        }).map(function (tr) { return tr.id.slice(4); });
+      };
+      if (activeIds().length) CV.poll(function () { return '/api/runs?ids=' + activeIds().join(','); }, function (d) {
+        var changed = false;
+        Object.keys(d.runs).forEach(function (id) {
+          var row = document.getElementById('job-' + id), data = d.runs[id];
+          if (!row || (row.dataset.version === data.version && row.dataset.busy === (data.busy || []).join(','))) return;
+          var wasChecked = row.querySelector('.row-check').checked;
+          var holder = document.createElement('tbody'); holder.innerHTML = data.html;
+          var fresh = holder.firstElementChild; fresh.querySelector('.row-check').checked = wasChecked;
+          row.replaceWith(fresh);
+          changed = true;
+          if (window.CVPeek && CVPeek.current() === id) CVPeek.show(id);
+        });
+        if (changed && window.CVPeek) CVPeek.mark();
+        if (d.overall && document.getElementById('overall')) {
+          var names = {applied: 'applied', ready: 'ready to apply', working: 'in progress', you: 'need you', failed: 'failed'};
+          document.getElementById('ov-percent').textContent = d.overall.percent + '%';
+          document.getElementById('ov-jobs').textContent = d.overall.jobs;
+          var bar = document.getElementById('ov-bar');
+          bar.setAttribute('aria-valuenow', d.overall.percent); bar.firstElementChild.style.width = d.overall.percent + '%';
+          var counts = document.getElementById('ov-counts'); counts.textContent = '';
+          Object.keys(names).filter(function (k) { return d.overall.counts[k]; }).forEach(function (k, i) {
+            if (i) counts.appendChild(document.createTextNode(' · '));
+            var item = document.createElement('span'); item.className = 'nowrap';
+            var dot = document.createElement('i'); dot.className = 'legend-dot ' + k;
+            item.appendChild(dot); item.appendChild(document.createTextNode(d.overall.counts[k] + ' ' + names[k]));
+            counts.appendChild(item);
+          });
+        }
+        return activeIds().length > 0;
+      });
+    }
+
+    // ---- the right half: what's next across jobs, or the job you picked ----
+    var dockBody = document.getElementById('jobs-dock');
+    if (dockBody) {
+      var holder = document.getElementById('peek-holder'), todo = document.getElementById('todo'), current = null;
+      var remember = function (id) { try { if (id) sessionStorage.setItem('jobs.peek', id); else sessionStorage.removeItem('jobs.peek'); } catch (e) { /* private window */ } };
+      var mark = function () {
+        document.querySelectorAll('#bulk tbody tr').forEach(function (tr) {
+          var on = tr.id === 'job-' + current;
+          tr.classList.toggle('selected', on);
+          tr.setAttribute('aria-selected', String(on));
+        });
+      };
+      var show = function (id, scroll) {
+        current = id; remember(id); mark();
+        if (!id) { holder.hidden = true; holder.textContent = ''; document.getElementById('add-panel').hidden = false; return; }
+        fetch('/runs/' + id + '/peek', {headers: {'X-Requested-With': 'peek'}})
+          .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
+          .then(function (html) {
+            if (current !== id) return;
+            holder.innerHTML = html; holder.hidden = false; document.getElementById('add-panel').hidden = true;
+            if (scroll && !window.matchMedia('(min-width: 1000px)').matches) document.getElementById('dock').scrollIntoView({behavior: 'smooth'});
+          })
+          .catch(function () { if (current === id) show(null); });
+      };
+      window.CVPeek = {show: show, mark: mark, current: function () { return current; }};
+      document.addEventListener('click', function (e) {
+        if (e.target.closest('[data-peek-close]')) { show(null); return; }
+        var tr = e.target.closest('#bulk tbody tr');
+        if (!tr || e.target.closest('a, button, input, label, select, textarea')) return;
+        show(tr.id.slice(4), true);
+      });
+      document.addEventListener('keydown', function (e) {
+        var tr = e.target.closest && e.target.closest('#bulk tbody tr');
+        if (tr && e.target === tr && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); show(tr.id.slice(4), true); }
+      });
+      var saved = null;
+      try { saved = sessionStorage.getItem('jobs.peek'); } catch (e) { /* private window */ }
+      if (saved && document.getElementById('job-' + saved)) show(saved);
+    }
+  })();
+</script>
+{% endblock %}

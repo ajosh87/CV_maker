@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Log — CV Tailor{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+  {% set back = came_from(url_for('settings') ~ '#log', 'Settings') %}
+  <a href="{{ back[0] }}" class="back">← {{ back[1] }}</a>
+  <div class="page-head">
+    <div>
+      <h1>Log</h1>
+      <p class="lead">What the app did, with every warning and error and the job it belongs to. Kept on this computer and never sent anywhere. Your contact details, email addresses and API keys are masked, so it can go into a bug report as it is.</p>
+    </div>
+  </div>
+
+  <nav class="seg" aria-label="Which entries">
+    {% for key, label in [('all', 'Everything'), ('warnings', 'Warnings and errors'), ('errors', 'Errors')] %}
+      <a href="{{ url_with(level=None if key == 'all' else key) }}" class="{{ 'active' if level == key }}">{{ label }}<span class="count">{{ data.counts[key] }}</span></a>
+    {% endfor %}
+  </nav>
+  <form method="get" class="toolbar" role="search">
+    {% if level != 'all' %}<input type="hidden" name="level" value="{{ level }}">{% endif %}
+    {% if ref %}<input type="hidden" name="ref" value="{{ ref }}">{% endif %}
+    <label for="q" class="sr-only">Search the log</label>
+    <input type="search" id="q" name="q" value="{{ q }}" placeholder="Search messages and tracebacks">
+    <button type="submit" class="secondary sm">Search</button>
+    {% if q or ref %}<a href="{{ url_with(q=None, ref=None) }}" class="small quiet">Show everything</a>{% endif %}
+  </form>
+  {% if ref %}<p class="small muted mb-sm">Only entries about <code>{{ ref }}</code> (one job, CV or application).</p>{% endif %}
+
+  {% if data.entries %}
+    <div class="table-wrap">
+      <table class="table small log-table">
+        <thead><tr><th>Time</th><th>Level</th><th>About</th><th>What happened</th></tr></thead>
+        <tbody>
+          {% for e in data.entries %}
+            <tr class="lv-{{ e.level|lower }}" tabindex="0">
+              <td class="nowrap faint mono">{{ e.time }}</td>
+              <td><span class="lv">{{ {'CRITICAL': 'error'}.get(e.level, e.level|lower) }}</span></td>
+              <td class="nowrap">{% if e.task != 'app' %}<a href="{{ url_with(ref=e.task.split(' ')[-1]) }}" class="quiet mono" title="Only this one">{{ e.task }}</a>{% else %}<span class="faint mono">app</span>{% endif %}</td>
+              <td class="break">{{ e.message }}
+                {% if e.details %}<span class="has-details small faint">· traceback ({{ e.details|length }} lines)</span><details class="mt-xs inline-only" {{ 'open' if e.level in ('ERROR', 'CRITICAL') and loop.index <= 3 }}><summary class="small">Traceback and details ({{ e.details|length }} lines)</summary><pre class="log-pre">{{ e.details|join('\n') }}</pre></details>{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if data.total > data.entries|length %}<p class="small faint mt-sm">Showing the newest {{ data.entries|length }} of {{ data.total }}. Download the log for everything.</p>{% endif %}
+  {% else %}
+    <p class="muted mt-md">{{ 'Nothing matches.' if q or ref or level != 'all' else 'The log is empty.' }}</p>
+  {% endif %}
+
+{% endblock %}
+{% block dock_label %}Entry{% endblock %}
+{% block dock %}
+<div id="log-dock">
+  <div id="log-entry" aria-live="polite" hidden></div>
+  <div id="log-intro">
+    <div class="dock-head"><h2 class="dock-title">The log</h2></div>
+    <p class="muted">Click an entry on the left to read it here in full, with its traceback and the job, CV or application it belongs to.</p>
+    <p class="small mt-md {{ 'error-text' if problems.errors else 'warn-text' if problems.warnings else 'faint' }}">{% if problems.errors or problems.warnings %}{{ problems.errors }} error{{ '' if problems.errors == 1 else 's' }} and {{ problems.warnings }} warning{{ '' if problems.warnings == 1 else 's' }} in the last day.{% else %}No errors or warnings in the last day.{% endif %}</p>
+    <div class="row mt-md">
+      <a href="{{ url_for('log_download') }}" class="btn secondary sm">Download the log</a>
+      <form method="post" action="{{ url_for('log_clear') }}" data-confirm="Clear the log? Everything recorded so far, including errors, is deleted.">
+        <button type="submit" class="link-btn quiet-danger small">Clear the log</button>
+      </form>
+    </div>
+    <p class="small faint mono break mt-sm">{{ path }}</p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  (function () {
+    var box = document.getElementById('log-entry'), intro = document.getElementById('log-intro');
+    function show(tr) {
+      document.querySelectorAll('.log-table tbody tr').forEach(function (r) { r.classList.toggle('selected', r === tr); });
+      var cells = tr.children, pre = tr.querySelector('.log-pre');
+      box.textContent = '';
+      var head = document.createElement('div'); head.className = 'dock-head';
+      var level = document.createElement('span'); level.className = 'lv'; level.textContent = cells[1].textContent.trim();
+      var when = document.createElement('span'); when.className = 'small faint mono'; when.textContent = cells[0].textContent.trim();
+      var about = cells[2].querySelector('a, span').cloneNode(true); about.classList.add('push-right');
+      head.appendChild(level); head.appendChild(when); head.appendChild(about);
+      var msg = document.createElement('p'); msg.className = 'log-msg break';
+      msg.textContent = cells[3].firstChild ? cells[3].firstChild.textContent.trim() : '';
+      box.appendChild(head); box.appendChild(msg);
+      if (pre) { var copy = pre.cloneNode(true); copy.classList.add('mt-md'); box.appendChild(copy); }
+      else { var none = document.createElement('p'); none.className = 'small faint mt-md'; none.textContent = 'No traceback or details for this entry.'; box.appendChild(none); }
+      box.className = 'lv-' + (tr.className.match(/lv-(\w+)/) || [, 'info'])[1];
+      box.hidden = false; intro.hidden = true;
+    }
+    document.addEventListener('click', function (e) {
+      var tr = e.target.closest('.log-table tbody tr');
+      if (tr && !e.target.closest('a, summary, button, pre')) show(tr);
+    });
+    document.addEventListener('keydown', function (e) {
+      var tr = e.target.closest && e.target.closest('.log-table tbody tr');
+      if (tr && e.target === tr && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); show(tr); }
+    });
+  })();
+</script>
+{% endblock %}

@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Edit profile — CV Tailor{% endblock %}
+{% macro role_block(i, e=None) -%}
+  <div class="edit-block{% if not e %} new{% endif %}">
+    {% if not e %}<p class="small muted" style="margin-bottom: 10px;">Add a role (leave empty to skip)</p>{% endif %}
+    <div class="grid-2">
+      <div class="field"><label for="exp-{{ i }}-title">Title</label><input type="text" id="exp-{{ i }}-title" name="exp-{{ i }}-title" value="{{ e.title if e else '' }}"></div>
+      <div class="field"><label for="exp-{{ i }}-company">Company</label><input type="text" id="exp-{{ i }}-company" name="exp-{{ i }}-company" value="{{ e.company if e else '' }}"></div>
+      <div class="field"><label for="exp-{{ i }}-start">Start</label><input type="text" id="exp-{{ i }}-start" name="exp-{{ i }}-start" value="{{ e.start if e else '' }}" placeholder="e.g. Mar 2021"></div>
+      <div class="field"><label for="exp-{{ i }}-end">End</label><input type="text" id="exp-{{ i }}-end" name="exp-{{ i }}-end" value="{{ (e.end or '') if e else '' }}" placeholder="leave empty if current"></div>
+      <div class="field"><label for="exp-{{ i }}-location">Location</label><input type="text" id="exp-{{ i }}-location" name="exp-{{ i }}-location" value="{{ e.location if e else '' }}"></div>
+      <div class="field" style="display:flex; align-items:flex-end;"><label class="check"><input type="checkbox" name="exp-{{ i }}-current" value="1" {% if e and e.current %}checked{% endif %}> I work here now</label></div>
+    </div>
+    <div class="field"><label for="exp-{{ i }}-bullets">Achievements, one per line</label><textarea id="exp-{{ i }}-bullets" name="exp-{{ i }}-bullets" rows="4">{{ e.bullets|join('\n') if e else '' }}</textarea></div>
+    {% if e %}<label class="check small"><input type="checkbox" name="exp-{{ i }}-remove" value="1"> Remove this role</label>{% endif %}
+  </div>
+{%- endmacro %}
+{% macro edu_block(i, e=None) -%}
+  <div class="edit-block{% if not e %} new{% endif %}">
+    {% if not e %}<p class="small muted" style="margin-bottom: 10px;">Add education (leave empty to skip)</p>{% endif %}
+    <div class="grid-2">
+      <div class="field"><label for="edu-{{ i }}-credential">Qualification</label><input type="text" id="edu-{{ i }}-credential" name="edu-{{ i }}-credential" value="{{ e.credential if e else '' }}" placeholder="e.g. MSc"></div>
+      <div class="field"><label for="edu-{{ i }}-field">Field</label><input type="text" id="edu-{{ i }}-field" name="edu-{{ i }}-field" value="{{ e.field if e else '' }}"></div>
+      <div class="field"><label for="edu-{{ i }}-school">School</label><input type="text" id="edu-{{ i }}-school" name="edu-{{ i }}-school" value="{{ e.school if e else '' }}"></div>
+      <div class="field"><label for="edu-{{ i }}-dates">Dates</label><input type="text" id="edu-{{ i }}-dates" name="edu-{{ i }}-dates" value="{{ e.dates if e else '' }}"></div>
+    </div>
+    {% if e %}<label class="check small"><input type="checkbox" name="edu-{{ i }}-remove" value="1"> Remove</label>{% endif %}
+  </div>
+{%- endmacro %}
+{% block content %}
+  <a href="{{ url_for('profile') }}" class="back">← Profile</a>
+  <div class="page-head">
+    <div>
+      <h1>Edit profile</h1>
+      <p class="lead">Everything here counts as a confirmed fact. Existing CV versions don't change; new ones will use what you save.</p>
+    </div>
+  </div>
+  <form method="post">
+    <section>
+      <h2>Contact</h2>
+      <div class="grid-2">
+        <div class="field"><label for="name">Name</label><input type="text" id="name" name="name" value="{{ profile.name if profile else '' }}"></div>
+        <div class="field"><label for="target_role">Headline <span class="faint">(optional, e.g. Senior Backend Engineer)</span></label><input type="text" id="target_role" name="target_role" value="{{ (profile.target_role or '') if profile else '' }}"></div>
+        <div class="field"><label for="email">Email</label><input type="text" id="email" name="email" value="{{ profile.email if profile else '' }}"></div>
+        <div class="field"><label for="phone">Phone</label><input type="text" id="phone" name="phone" value="{{ profile.phone if profile else '' }}"></div>
+        <div class="field"><label for="location">Location</label><input type="text" id="location" name="location" value="{{ profile.location if profile else '' }}"></div>
+      </div>
+      <div class="field"><label for="links">Links, one per line <span class="faint">(e.g. github: github.com/you)</span></label><textarea id="links" name="links" rows="3">{{ links_text }}</textarea></div>
+    </section>
+
+    <section>
+      <h2>Experience</h2>
+      {% set roles = profile.experiences if profile else [] %}
+      {% for e in roles %}{{ role_block(loop.index0, e) }}{% endfor %}
+      {{ role_block(roles|length) }}
+    </section>
+
+    <section>
+      <h2>Education</h2>
+      {% set edus = profile.education if profile else [] %}
+      {% for e in edus %}{{ edu_block(loop.index0, e) }}{% endfor %}
+      {{ edu_block(edus|length) }}
+    </section>
+
+    <section>
+      <h2>Skills</h2>
+      <div class="field">
+        <label for="skills">One per line</label>
+        <textarea id="skills" name="skills" rows="8">{{ (profile.skills|map(attribute='name')|join('\n')) if profile else '' }}</textarea>
+        <p class="hint">Remove a line to drop a skill. New lines are marked "added by you".</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>More</h2>
+      {% for key, label in extra_lists %}
+        <div class="field">
+          <label for="extra-{{ key }}">{{ label }}, one per line</label>
+          <textarea id="extra-{{ key }}" name="extra-{{ key }}" rows="3">{{ ((profile.extras.get(key) or [])|join('\n')) if profile else '' }}</textarea>
+        </div>
+      {% endfor %}
+    </section>
+
+    <div class="row mt-lg">
+      <button type="submit">Save profile</button>
+      <a href="{{ url_for('profile') }}" class="btn ghost">Cancel</a>
+    </div>
+  </form>
+{% endblock %}
+{% block dock_label %}For reference{% endblock %}
+{% block dock %}
+<div id="edit-dock">
+  <div class="dock-head"><h2 class="dock-title">For reference</h2><span class="small faint">Copy from your CV; check what ranks</span></div>
+  <section class="sub">
+    <h3 class="sub-title">What helps a CV rank</h3>
+    <ul class="dot-list small muted">
+      <li>One achievement per line, with a number where you have one (time saved, users, cost, size): ranking systems and recruiters favour measurable results.</li>
+      <li>Name skills the way job postings do (“Kubernetes”, “Retrieval-Augmented Generation (RAG)”): the app matches other names too, but exact words rank best.</li>
+      <li>A start (and end) date on every role, and your education: applicant tracking systems look for both.</li>
+      <li>Only facts you'd stand behind in an interview: everything here is treated as true.</li>
+    </ul>
+  </section>
+  <section class="sub">
+    <h3 class="sub-title">Your CV file{% if source %}: {{ source.filename }}{% endif %}</h3>
+    {% if source %}
+      <p class="small faint mb-sm">The text read from it ({{ source.created_at|when }}), on this computer.</p>
+      <div class="jd-text dock-jd">{{ source.text }}</div>
+    {% else %}
+      <p class="small muted">No CV file yet. <a href="{{ url_for('profile') }}">Add one on the Profile page</a> to have it read into your profile.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}
