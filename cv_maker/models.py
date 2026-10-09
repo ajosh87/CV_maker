@@ -125,6 +125,9 @@ class Application:
     submitted_by: str = ""  # "assistant" (after your approval) | "you"
     show_window: bool = False
     allowed_sites: list = field(default_factory=list)
+    # Your answers during this application, by the form's question: reused when a page is read again (sites that
+    # re-render their forms give fields new ids), and on a resume. Never a password, code or ID number.
+    answers: dict = field(default_factory=dict)
 
 
 @dataclass

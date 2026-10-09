@@ -4,7 +4,9 @@ Works on a plain description of the page (see page.OBSERVE_JS), so all of it is 
 Guards that never depend on the LLM:
 - the final submit and account creation are never clicked without your approval;
 - voluntary diversity questions are declined when the form offers that, otherwise asked; never sent to the LLM;
-- consent and attestation boxes are yours to tick; marketing boxes are left alone.
+- consent and attestation boxes are yours to tick; marketing boxes are left alone;
+- passwords, one-time codes, security answers and ID or bank numbers are yours to type in the view: never filled
+  from an answer, never sent to the LLM, never saved or logged.
 """
 import re
 from dataclasses import dataclass, field
@@ -32,7 +34,13 @@ _CV_FILE = re.compile(r"r[ée]sum[ée]|\bcv\b|curriculum", re.I)
 _LETTER_FILE = re.compile(r"cover(ing)? letter|motivation", re.I)
 _NOT_APPLICATION_UPLOAD = re.compile(r"\bmatch(es|ing)?\b|\bscore\b|compare|similar jobs|recommend|profile photo|avatar", re.I)
 
+SECRET = app_details.SECRET  # mirrored by SECRET in page.OBSERVE_JS
+# A question that says nothing about the field ("What is this question asking?"): replaced by the field's own words.
+_VAGUE = re.compile(r"^\W*$|what (is|does) (this|the) (question|field)|what should (go|be entered) here\??$|"
+                    r"^(please )?(answer|fill in|complete) (this|the) (question|field)\.?$|^how should this be answered\??$", re.I)
+
 CHOICE_KINDS = {"select", "radio", "combobox"}
+MANY_KINDS = {"multi", "listbox"}
 TEXT_KINDS = {"text", "email", "tel", "url", "number", "search", "textarea", "date", "month", ""}
 
 # (detail key, label pattern on the normalised label, autocomplete tokens)
@@ -44,8 +52,8 @@ _RULES = [
     ("email", r"(your )?e-?mail( address)?", ("email",)),
     ("phone", r"(mobile |cell |home )?(phone|telephone)( number)?|mobile( number)?", ("tel", "tel-national")),
     ("address", r"(street |home )?address( line 1)?|street", ("street-address", "address-line1")),
-    ("city", r"city|town|city/town", ("address-level2",)),
-    ("postal_code", r"zip( code)?|postal code|post ?code|pin ?code", ("postal-code",)),
+    ("city", r"(current )?(city|town)((/| or | / )(city|town))?( of residence)?", ("address-level2",)),
+    ("postal_code", r"zip( code)?|zip/postal code|postal code|post ?code|pin ?code", ("postal-code",)),
     ("country", r"country|country/region|country of residence", ("country", "country-name")),
     ("linkedin", r"linked ?in( profile)?( url)?", ()),
     ("website", r"(personal )?(website|portfolio|github)( url| link)?", ("url",)),
@@ -66,7 +74,7 @@ class Action:
     id: str
     value: str = ""
     label: str = ""
-    source: str = "rule"  # rule | llm | you
+    source: str = "rule"  # rule | llm | you | account (your sign-in, the only one that types a password)
     shown: str = ""  # how it appears in the log: never a personal detail
 
 
@@ -99,6 +107,10 @@ def pick_option(answer: str, options: list[str]) -> str | None:
         if (yes and re.match(r"yes\b", o)) or (no and re.match(r"no\b", o)):
             return orig
     return None
+
+
+def is_secret(f: dict) -> bool:
+    return bool(f.get("secret")) or f.get("kind") == "password" or bool(SECRET.search(f.get("label", "")))
 
 
 def is_eeo(f: dict) -> bool:
@@ -135,7 +147,9 @@ def _value(key: str, standard: dict) -> str:
 
 def _shown(key: str, value: str) -> str:
     """Personal details are logged by what they are, never by their value."""
-    base = {"full_name": "first_name", "email_confirm": "email"}.get(key, key)
+    if key == "full_name":
+        return "your full name"
+    base = {"email_confirm": "email"}.get(key, key)
     if base in app_details.PRIVATE_KINDS:
         return f"your {app_details.LABELS[base].lower()}"
     return value
@@ -157,7 +171,7 @@ def by_rule(page: dict, details: dict, files: dict) -> tuple[list[Action], list[
     actions, ask = [], []
     standard, custom = details["standard"], details.get("custom", [])
     for f in page["fields"]:
-        if f.get("filled"):
+        if f.get("filled") or is_secret(f):
             continue
         kind, label = f.get("kind", ""), f.get("label", "")
         if kind == "file":
@@ -187,16 +201,32 @@ def by_rule(page: dict, details: dict, files: dict) -> tuple[list[Action], list[
                 ask.append(_question(f, "Do you agree to this? It's your call, so the assistant won't tick it.", kind="consent"))
             continue
         key = _rule_key(f)
-        value = _value(key, standard) if key else _custom_answer(label, custom)
+        value = (_value(key, standard) if key else "") or _custom_answer(label, custom)  # your saved detail, else an answer
         if not value:
             continue
         if kind in CHOICE_KINDS:
             option = pick_option(value, f.get("options") or [])
             if option:
                 actions.append(Action("choose", f["id"], option, label, shown=_shown(key or "", option)))
+            elif kind == "combobox" and not f.get("options"):  # a typeahead: its options appear as it's typed
+                actions.append(Action("fill", f["id"], value, label, shown=_shown(key or "", value)))
+        elif kind in MANY_KINDS:
+            picked = pick_many(value, f.get("options") or [])
+            if picked:
+                actions.append(Action("choose", f["id"], "; ".join(picked), label, shown="; ".join(picked)))
         elif kind in TEXT_KINDS:
             actions.append(Action("fill", f["id"], value, label, shown=_shown(key or "", value)))
     return actions, ask
+
+
+def pick_many(answer: str, options: list[str]) -> list[str]:
+    """"Python; SQL" -> the options that mean each of them."""
+    out = []
+    for part in re.split(r"\s*[;\n|]\s*", answer or ""):
+        option = pick_option(part, options) if part.strip() else None
+        if option and option not in out:
+            out.append(option)
+    return out
 
 
 def pending_documents(page: dict) -> dict:
@@ -213,11 +243,21 @@ def pending_documents(page: dict) -> dict:
 
 
 def ask_required(f: dict) -> dict:
-    return _question(f, "This is required and there's no saved answer for it. What should go here?")
+    if is_secret(f):
+        return ask_secret(f)
+    return _question(f, "Required, and there's no saved answer for it.")
 
 
-def ask_failed(f: dict) -> dict:
-    return _question(f, "The assistant couldn't fill this in. What should go here? (Or fill it in yourself in the view.)")
+def ask_failed(f: dict, why: str = "", tried: str = "") -> dict:
+    if is_secret(f):
+        return ask_secret(f)
+    said = f" Your answer “{tried[:80]}” didn't stay: {why}." if tried and why else f" ({why})" if why else ""
+    return _question(f, f"The assistant couldn't fill this in.{said} Pick or type the answer here, or fill it in yourself in the view.")
+
+
+def ask_secret(f: dict) -> dict:
+    return _question(f, "This is for a password, code or ID number, which the assistant never types and the app never "
+                        "keeps. Type it into the page yourself in the view, then answer the rest.", kind="secret")
 
 
 def pick_decline(f: dict) -> str | None:
@@ -225,15 +265,33 @@ def pick_decline(f: dict) -> str | None:
 
 
 def _question(f: dict, question: str, kind: str = "") -> dict:
-    return {"id": f["id"], "label": f.get("label", ""), "question": question, "kind": kind or f.get("kind", ""),
-            "options": f.get("options") or []}
+    """A question about field `f`, said in the form's own words: its label (or, without one, where it is), the help
+    text the site shows for it, and its options."""
+    label = norm_label(f.get("label", "")) and f.get("label", "").strip(" *:")
+    if _VAGUE.search(question or ""):
+        question = "Required, and there's no saved answer for it." if f.get("required") else "What should go here?"
+    return {"id": f["id"], "label": label or "A field without a label (outlined in the view)", "question": question,
+            "kind": kind or f.get("kind", ""), "options": f.get("options") or [], "hint": f.get("hint", ""),
+            "required": bool(f.get("required")), "format": f.get("format", ""), "box": f.get("box"),
+            "multiple": f.get("kind") == "multi" or bool(f.get("multiple")), "unlabelled": not label}
+
+
+def find_field(question: dict, fields: list[dict]) -> dict | None:
+    """The field a question was about, on the page as it is now: by id while the page hasn't changed, else by its
+    label and kind (a site that re-renders its form gives every field a new id)."""
+    by_id = next((f for f in fields if f["id"] == question.get("id")), None)
+    label = "" if question.get("unlabelled") else norm_label(question.get("label", ""))
+    if by_id is not None and (not label or norm_label(by_id.get("label", "")) == label):
+        return by_id
+    same = [f for f in fields if label and norm_label(f.get("label", "")) == label]
+    return next((f for f in same if f.get("kind") == question.get("kind")), same[0] if same else None)
 
 
 def for_llm(page: dict, handled: set) -> list[dict]:
     """The fields the LLM may decide: empty, not handled by rule, and nothing personal to you."""
     return [f for f in page["fields"]
             if not f.get("filled") and f["id"] not in handled and f.get("kind") not in ("file", "password")
-            and not is_eeo(f) and not is_consent(f) and not is_marketing(f)]
+            and not is_secret(f) and not is_eeo(f) and not is_consent(f) and not is_marketing(f)]
 
 
 _PROMPT = """You are helping a candidate fill in a job application form in their own browser, one page at a time.
@@ -243,6 +301,10 @@ Rules:
 - Use only the candidate profile and saved answers below. Never invent facts, numbers, dates or qualifications.
 - Personal details are placeholders such as [[NAME_1]]. When one belongs in a field, write the placeholder exactly.
 - If a required question can't be answered from the profile or saved answers, ask the candidate instead of guessing.
+  Word the question so it stands on its own: say what the form asks, in its words. Never ask what a field means.
+- For a field with options, answer with one option exactly as listed. For "choose one or more", list each chosen
+  option exactly as listed, separated by " ; ".
+- Dates: in the field's format when one is given.
 - To move on, click the button that saves or continues to the next step.
 - If this page is the final review and submitting is all that's left, answer "ready_to_submit" instead of clicking.
 - If the page wants the candidate to sign in or create an account, answer "account".
@@ -254,7 +316,7 @@ Page: {title} | {where}
 Headings: {headings}
 Errors on the page: {errors}
 {filled} fields are already filled.
-Fields to decide (id · type · label · required · options):
+Fields to decide (id · type · label · required · help text · format · options):
 {fields}
 Buttons:
 {buttons}
@@ -272,9 +334,16 @@ Return one JSON object:
 
 
 def _field_line(f: dict) -> str:
-    parts = [f["id"], f.get("kind") or "text", f.get("label") or "(no label)"]
+    kind = f.get("kind") or "text"
+    if kind in MANY_KINDS and (kind == "multi" or f.get("multiple")):
+        kind = "choose one or more"
+    parts = [f["id"], kind, f.get("label") or "(no label)"]
     if f.get("required"):
         parts.append("required")
+    if f.get("hint"):
+        parts.append(f"help: {f['hint'][:120]}")
+    if f.get("format"):
+        parts.append(f"format {f['format']}")
     options = f.get("options") or []
     if options:
         more = f" … ({len(options) - 25} more)" if len(options) > 25 else ""
@@ -312,10 +381,19 @@ def parse_plan(data: dict, page: dict, allowed: list[dict], check_text=lambda te
             asked.add(f["id"])
             plan.ask.append(_question(f, str(item.get("question") or f.get("label") or "How should this be answered?")[:300]))
     for item in data.get("fill") or []:
-        f, value = fields.get(str(item.get("id"))), str(item.get("value") or "").strip()
+        raw = item.get("value")
+        value = " ; ".join(str(v) for v in raw) if isinstance(raw, list) else str(raw or "").strip()
+        f = fields.get(str(item.get("id")))
         if not f or not value or f["id"] in asked:
             continue
         kind = f.get("kind", "")
+        if kind in MANY_KINDS:
+            picked = pick_many(value, f.get("options") or [])
+            if picked:
+                plan.actions.append(Action("choose", f["id"], "; ".join(picked), f.get("label", ""), "llm", "; ".join(picked)))
+            else:
+                plan.ask.append(_question(f, f"Which of these apply? (the assistant suggested “{value[:80]}”)"))
+            continue
         if kind in CHOICE_KINDS:
             option = pick_option(value, f.get("options") or [])
             if option:
@@ -374,9 +452,11 @@ def navigation(info: dict) -> tuple[str, str] | None:
 def has_saved_answer(f: dict, details: dict) -> bool:
     """Whether the assistant could fill this field by rule, from your saved details."""
     key = _rule_key(f)
-    value = _value(key, details["standard"]) if key else _custom_answer(f.get("label", ""), details.get("custom", []))
-    if not value:
+    value = (_value(key, details["standard"]) if key else "") or _custom_answer(f.get("label", ""), details.get("custom", []))
+    if not value or is_secret(f):
         return False
+    if f.get("kind") in MANY_KINDS:
+        return bool(pick_many(value, f.get("options") or []))
     return pick_option(value, f.get("options") or []) is not None if f.get("kind") in CHOICE_KINDS and f.get("options") else True
 
 

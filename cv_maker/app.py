@@ -478,7 +478,7 @@ def create_app(data_dir: Path | None = None, *, model_factory=None, fetcher=None
         if not Path(upload_rec.path).exists():
             flash("The original file is no longer on disk.", "error")
             return redirect(url_for("profile"))
-        return send_file(upload_rec.path, as_attachment=True, download_name=secure_filename(upload_rec.filename) or "cv")
+        return send_file(Path(upload_rec.path).absolute(), as_attachment=True, download_name=secure_filename(upload_rec.filename) or "cv")
 
     @app.route("/uploads/<upload_id>/delete", methods=["POST"])
     def delete_upload(upload_id: str):
@@ -1027,12 +1027,14 @@ def create_app(data_dir: Path | None = None, *, model_factory=None, fetcher=None
         doc = store.get_document(doc_id)
         if doc is None:
             abort(404)
+        # Files saved by earlier versions may have relative paths (from the folder the app started in). Flask would
+        # read those from its package folder, so they're made absolute the same way this check reads them.
         if not Path(doc.path).exists():
             flash("That file is no longer on disk.", "error")
             return redirect(url_for("run_detail", run_id=doc.run_id))
         run = store.find_run(doc.run_id)
         kind = "CV" if doc.kind == "cv" else "Cover letter"
-        return send_file(doc.path, as_attachment=True, download_name=_download_name(run, kind, doc.version))
+        return send_file(Path(doc.path).absolute(), as_attachment=True, download_name=_download_name(run, kind, doc.version))
 
     def _repoint_latest(run_id: str) -> None:
         """After deleting files, point the job at its newest remaining CV and that same version's letter."""
@@ -1078,7 +1080,7 @@ def create_app(data_dir: Path | None = None, *, model_factory=None, fetcher=None
             flash(f"The {kind} for that job is not available.", "error")
             return redirect(url_for("run_detail", run_id=run.id))
         latest = next((d for d in reversed(store.list_documents(run.id)) if d.path == path), None)
-        return send_file(path, as_attachment=True, download_name=_download_name(run, kind, latest.version if latest else None))
+        return send_file(Path(path).absolute(), as_attachment=True, download_name=_download_name(run, kind, latest.version if latest else None))
 
     @app.route("/download/<run_id>/cv")
     def download_cv(run_id: str):

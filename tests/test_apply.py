@@ -299,3 +299,101 @@ def test_a_captcha_is_handed_to_you(tmp_path):
         session.send({"action": "stop"})
         session.join(timeout=30)
         site.close()
+
+
+@needs_browser
+def test_real_world_widgets_partial_answers_and_a_pin_you_type_yourself(tmp_path, caplog):
+    """Job 4: a typeahead, a dropdown whose options exist only once opened, a field without a <label>, a
+    "select all that apply" group, radios named by aria-labelledby, a PIN, and a site that re-renders on every change."""
+    caplog.set_level("INFO")
+    site, store, application, session, model = _setup(tmp_path, "/job/4")
+    try:
+        session.start()
+        asked = _wait(store, application.id, lambda a: a.waiting.get("kind") == "question", "the questions")
+        questions = {q["label"]: q for q in asked.waiting["questions"]}
+        assert set(questions) == {"Marital status", "Which of these do you use at work?", "Willing to relocate?", "Enter your PIN"}
+        assert questions["Marital status"]["options"] == ["Single", "Married", "Prefer not to say"]  # read by opening it
+        assert questions["Which of these do you use at work?"]["multiple"]
+        assert questions["Willing to relocate?"]["options"] == ["Yes", "No"]
+        assert questions["Enter your PIN"]["kind"] == "secret"
+        assert not any("asking" in q["question"] for q in questions.values())
+        assert any(f["label"].startswith("City or Town") and f["value"] == "London" for f in asked.filled)  # picked from its list
+
+        _click(session, "Enter your PIN")  # you type the PIN yourself, in the view
+        session.send({"action": "input", "type": "type", "text": "4321"})
+        session.send({"action": "answer", "answers": [
+            {"id": questions["Marital status"]["id"], "value": "Single", "save": False},
+            {"id": questions["Which of these do you use at work?"]["id"], "value": "Python; SQL", "save": True},
+            {"id": questions["Willing to relocate?"]["id"], "value": "No", "save": False},
+            {"id": questions["Enter your PIN"]["id"], "value": "9999", "save": True},  # never taken, even if sent
+        ]})
+        ready = _wait(store, application.id, lambda a: a.waiting.get("kind") == "submit", "the review page")
+        session.send({"action": "approve_submit"})
+        _wait(store, application.id, lambda a: a.status == "submitted", "the confirmation")
+    finally:
+        session.send({"action": "stop"})
+        session.join(timeout=30)
+        site.close()
+
+    got = site.app.received["hard"]
+    assert got["city"] == "London, England" and got["marital"] == "Single" and got["tools"] == ["python", "sql"]
+    assert got["relocate"] == "no" and got["pin"] == "4321"
+    saved = app_details.load(store)["custom"]
+    assert [c["question"] for c in saved] == ["Which of these do you use at work? *"]  # nothing about the PIN
+    everything = json.dumps([ready.filled, model.prompts, store.get_application(application.id).answers]) + caplog.text
+    assert "4321" not in everything and "9999" not in everything
+
+
+def test_secret_fields_vague_questions_and_answers_that_outlive_a_re_render():
+    pin = _field("c0", "Enter your PIN *", required=True)
+    pin_code = _field("c1", "PIN code", autocomplete="postal-code")
+    page = {"fields": [pin, pin_code, _field("c2", "Notice period", required=True)], "buttons": []}
+    details = {**DETAILS, "standard": {**DETAILS["standard"], "postal_code": "600001"}}
+    actions, _ = planner.by_rule(page, details, {})
+    assert [a.id for a in actions] == ["c1"]  # an Indian PIN code is a postal code; a PIN is never filled
+    assert [f["id"] for f in planner.for_llm(page, set())] == ["c1", "c2"]  # the PIN never reaches the LLM
+    assert planner.ask_required(pin)["kind"] == "secret"
+
+    vague = planner.parse_plan({"ask": [{"id": "c2", "question": "What is this question asking?"}]}, page, page["fields"])
+    assert vague.ask[0]["label"] == "Notice period" and "asking" not in vague.ask[0]["question"]
+    unlabelled = planner.ask_required(_field("c9", "", required=True))
+    assert unlabelled["unlabelled"] and "outlined in the view" in unlabelled["label"]
+
+    # The site re-rendered: same question, new id. Your answer still finds it, and fills it by rule next time.
+    later = [_field("c7", "Notice period *", required=True)]
+    assert planner.find_field({"id": "c2", "label": "Notice period", "kind": "text"}, later)["id"] == "c7"
+    mine = {**DETAILS, "custom": [{"question": "notice period", "answer": "30 days"}]}
+    assert [(a.id, a.value) for a in planner.by_rule({"fields": later}, mine, {})[0]] == [("c7", "30 days")]
+
+    group = _field("c4", "Which of these do you use?", kind="multi", options=["Python", "SQL", "Excel"], ids=["a", "b", "c"])
+    plan = planner.parse_plan({"fill": [{"id": "c4", "value": ["python", "sql"]}]}, {"buttons": []}, [group])
+    assert plan.actions[0].value == "Python; SQL"
+    assert planner._rule_key({"label": "City or Town *"}) == "city"
+
+
+def test_saved_answers_never_keep_a_password_or_pin(tmp_path):
+    store = Store(tmp_path / "db.sqlite")
+    app_details.remember_answer(store, "Enter your PIN", "4321")
+    app_details.remember_answer(store, "Notice period", "30 days")
+    store.set_preference("apply_details", {**store.get_preference("apply_details"),
+                                           "custom": store.get_preference("apply_details")["custom"] + [{"question": "Password", "answer": "x"}]})
+    assert [c["question"] for c in app_details.load(store)["custom"]] == ["Notice period"]
+
+
+def test_linkedins_apply_tab_is_followed_once_it_has_somewhere_to_go(tmp_path):
+    from cv_maker.apply import session as apply_session
+
+    store = Store(tmp_path / "db.sqlite")
+    run = store.create_run(job_url="https://www.linkedin.com/jobs/view/1", status="ready")
+    application = store.create_application(run, 1, "https://www.linkedin.com/jobs/view/1")
+    session = apply_session.ApplySession(application=application, store=store, get_model=lambda: None,
+                                         browser_dir=tmp_path / "b", files={"cv": "cv.docx", "letter": ""},
+                                         job_label="Engineer", job_context="")
+    waited = []
+    session.page = types.SimpleNamespace(url="about:blank", wait_for_timeout=waited.append)
+    session._wait_for_you("site", "This part is on LinkedIn", site="linkedin.com", allow=False, linkedin=True)
+    session._last_watch = 0
+    session._watch()
+    assert store.get_application(application.id).allowed_sites == []  # "about" is not a website to allow
+    session._step()
+    assert waited and session._steps == 0  # waits for the tab to load; no step spent, nothing asked

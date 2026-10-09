@@ -4,7 +4,16 @@ Standard details start from your profile; answers to questions forms often ask (
 notice period...) are filled in once and reused. Questions you answer during an application can be
 saved here too.
 """
+import re
+
 from cv_maker.privacy import Secret
+
+# Labels of fields for passwords, one-time codes, security answers and ID or bank numbers: yours to type, never
+# saved as answers, filled from one or sent to the LLM. ("PIN code" is a postal code in India: not one of them.)
+SECRET = re.compile(r"password|passcode|passphrase|\bpin\b(?!\s*-?\s*code)|security (question|answer)|one[- ]time|\botp\b|"
+                    r"verification code|social security|\bssn\b|national (insurance|identity|id)( number)?|aadhaa?r|"
+                    r"\bpan( card| number)\b|passport (number|no)|\biban\b|routing number|sort code|(bank )?account number|"
+                    r"card number|\bcvv\b|\bcvc\b", re.I)
 
 # key, label, privacy kind (None: not identifying, so the LLM may read it to match a form's options)
 STANDARD = [
@@ -50,7 +59,8 @@ def load(store) -> dict:
     """{"standard": {key: value}, "custom": [{"question", "answer"}]}, with profile defaults for anything unset."""
     saved = store.get_preference("apply_details") or {}
     standard = {**defaults_from_profile(store.get_profile()), **{k: v for k, v in (saved.get("standard") or {}).items() if v}}
-    return {"standard": {key: standard.get(key, "") for key, _, _ in STANDARD}, "custom": list(saved.get("custom") or []),
+    custom = [c for c in saved.get("custom") or [] if not SECRET.search(str(c.get("question", "")))]  # never reused
+    return {"standard": {key: standard.get(key, "") for key, _, _ in STANDARD}, "custom": custom,
             "confirmed": bool(saved.get("confirmed")), "auto_sign_in": saved.get("auto_sign_in", True) is not False}
 
 
@@ -73,7 +83,10 @@ def save(store, standard: dict, custom: list | None = None) -> dict:
 
 
 def remember_answer(store, question: str, answer: str) -> None:
-    """Save an answer given during an application so the next form with the same question is filled by rule."""
+    """Save an answer given during an application so the next form with the same question is filled by rule.
+    Never one for a password, code or ID number."""
+    if SECRET.search(question or ""):
+        return
     data = store.get_preference("apply_details") or {"standard": {}, "custom": []}
     custom = [c for c in data.get("custom", []) if c.get("question", "").casefold() != question.casefold()]
     custom.append({"question": question, "answer": answer})

@@ -821,3 +821,8 @@ html.no-js .has-details { display: none; }
 .tier-core { border-color: var(--accent); }
 .tier-peripheral { opacity: 0.7; }
 .q-why { margin: 4px 0 0; }
+
+/* ---- the assistant's questions ---- */
+#ap-needs .question .q-label { font-weight: 600; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 0; }
+#ap-needs .question.secret { border-left: 3px solid var(--warn, #d9a400); }
+#ap-needs .choice-list { display: grid; gap: 4px; margin-top: 8px; max-height: 220px; overflow: auto; padding-right: 6px; }

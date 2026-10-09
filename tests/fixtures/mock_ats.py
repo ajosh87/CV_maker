@@ -18,6 +18,53 @@ def _page(title, body):
     return PAGE.format(title=title, body=body)
 
 
+# Job 4's page. Each widget behaves like the real ones: the city typeahead keeps nothing unless a suggestion is
+# picked, the marital-status dropdown builds its options only when opened, the notice question has no <label>, the
+# relocation radios are named by aria-labelledby, and every change makes the site re-render (all ids gone).
+HARD_FORM = """<form method="post" id="hard">
+<label for="city">City or Town *</label>
+<input id="city" role="combobox" aria-autocomplete="list" aria-controls="city-list" autocomplete="off">
+<input type="hidden" name="city" id="city-value"><ul role="listbox" id="city-list"></ul>
+<span id="ms-l">Marital status *</span>
+<div id="ms" role="combobox" tabindex="0" aria-labelledby="ms-l" aria-controls="ms-list" aria-required="true">Select...</div>
+<ul role="listbox" id="ms-list" hidden></ul><input type="hidden" name="marital" id="ms-value">
+<div class="row"><div class="q">Notice period in days</div><input name="notice"></div>
+<fieldset><legend>Which of these do you use at work? *</legend>
+<label><input type="checkbox" name="tools" value="python"> Python</label>
+<label><input type="checkbox" name="tools" value="sql"> SQL</label>
+<label><input type="checkbox" name="tools" value="excel"> Excel</label></fieldset>
+<p id="rel-q">Willing to relocate? *</p>
+<div role="radiogroup" aria-labelledby="rel-q"><label><input type="radio" name="rel" value="yes"> Yes</label>
+<label><input type="radio" name="rel" value="no"> No</label></div>
+<label for="pin">Enter your PIN *</label><input id="pin" name="pin" required>
+<button>Save and Continue</button></form>
+<script>
+const $ = id => document.getElementById(id);
+const CITIES = ["London, England", "Leeds, England", "Lisbon, Portugal"];
+$("city").addEventListener("input", () => {
+  const q = $("city").value.toLowerCase();
+  $("city-list").innerHTML = "";
+  CITIES.filter(c => q && c.toLowerCase().startsWith(q.slice(0, 3))).forEach(c => {
+    const li = document.createElement("li"); li.setAttribute("role", "option"); li.textContent = c;
+    li.addEventListener("mousedown", e => { e.preventDefault(); $("city").value = c; $("city-value").value = c; $("city-list").innerHTML = ""; });
+    $("city-list").appendChild(li);
+  });
+});
+$("city").addEventListener("blur", () => { setTimeout(() => { if (!$("city-value").value) $("city").value = ""; }, 50); });
+$("ms").addEventListener("click", () => {
+  $("ms-list").innerHTML = "";
+  ["Single", "Married", "Prefer not to say"].forEach(t => {
+    const li = document.createElement("li"); li.setAttribute("role", "option"); li.textContent = t;
+    li.addEventListener("click", () => { $("ms").textContent = t; $("ms-value").value = t; $("ms-list").hidden = true; });
+    $("ms-list").appendChild(li);
+  });
+  $("ms-list").hidden = false;
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") $("ms-list").hidden = true; });
+document.addEventListener("change", () => setTimeout(() => document.querySelectorAll("[data-cvt]").forEach(e => e.removeAttribute("data-cvt")), 30));
+</script>"""
+
+
 def create_mock_ats():
     app = Flask(__name__)
     app.secret_key = "mock-ats-only"
@@ -40,6 +87,8 @@ def create_mock_ats():
             return _page("Security check", '<div class="g-recaptcha" data-sitekey="test-key"></div>'
                                            '<form method="post"><label><input type="checkbox" name="robot" value="no">'
                                            " I'm not a robot</label><button>Continue</button></form>")
+        if n == 4:
+            return redirect("/apply/4/hard")
         if session.get("user"):
             return redirect(f"/apply/{n}/info")
         if request.method == "POST":
@@ -126,6 +175,20 @@ def create_mock_ats():
                     '<label><input type="checkbox" name="certify" value="yes" required> I certify that the information '
                     'I have provided is accurate</label>',
                     ["certify"], "review")
+
+    @app.route("/apply/4/hard", methods=["GET", "POST"])
+    def hard():
+        """Job 4: the widgets real application systems use (Oracle, Workday), on one page."""
+        if request.method == "POST":
+            got = {"city": request.form.get("city", ""), "marital": request.form.get("marital", ""),
+                   "tools": request.form.getlist("tools"), "relocate": request.form.get("rel", ""),
+                   "pin": request.form.get("pin", ""), "notice": request.form.get("notice", "")}
+            missing = [k for k in ("city", "marital", "tools", "relocate", "pin") if not got[k]]
+            if not missing:
+                app.received["hard"] = got
+                return redirect("/apply/4/review")
+            app.received.setdefault("hard_errors", []).append(missing)
+        return _page("Additional Questions", HARD_FORM)
 
     @app.route("/apply/<int:n>/review", methods=["GET", "POST"])
     def review(n):

@@ -313,7 +313,21 @@ app. You can pause and take over (click and type in the view) at any time, then 
   saved account, a CAPTCHA, an email confirmation, or the application moving to an unfamiliar website.
   Forms that move to an application system employers use (Workday, Greenhouse, Lever, SmartRecruiters,
   iCIMS, Taleo, SuccessFactors and others) carry on without asking. After you get past a sign-in, a
-  CAPTCHA or LinkedIn, it notices and carries on by itself.
+  CAPTCHA or LinkedIn, it notices and carries on by itself (a tab LinkedIn opens blank first is followed once
+  it loads).
+- **Real-world forms:** it reads a field's question even when the site gives it no label (the text next to
+  it), and understands dropdowns whose options appear only once opened (it opens them to read the options),
+  typeaheads (it types and picks a suggestion), "select all that apply" boxes, scrollable lists, radio groups
+  and date fields. Every fill is read back: a value the site didn't keep is asked about, with the options the
+  site offered, instead of the assistant moving on.
+- **Your answers stick:** each question is headed by the form's own words, with the site's help text, and
+  the field is outlined in the view while you answer. Your answers are kept for the whole application, so a
+  site that re-renders its form (Oracle, Workday) or a page you come back to is filled from them, not asked
+  again. Tick "save" to reuse an answer on later applications.
+- **Passwords and ID numbers are yours to type:** fields for passwords, one-time codes, security answers,
+  PINs and ID or bank numbers are never filled from an answer, sent to the LLM, saved or logged. The
+  assistant asks you to type them in the view yourself. The only exception is your own sign-in, from your
+  system's password store.
 - **The live browser:** the right half of the application page. **Take over** whenever you like and use
   it as a browser: click, scroll and type in it, or use Back, Forward, Reload and the address bar (using
   them takes over too). **Let the assistant continue** hands it back.
