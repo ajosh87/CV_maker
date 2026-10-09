@@ -7,7 +7,7 @@
   var api = '/api/applications/' + id;
   var $ = function (sel) { return document.getElementById(sel); };
   var live = $('ap-live'), img = $('ap-frame'), target = $('ap-target'), badge = $('ap-badge'), needs = $('ap-needs');
-  var state = {}, frameSeq = -2, needsKey = '', filledCount = -1, timer = null;
+  var state = {}, frameSeq = -2, needsKey = '', filledCount = -1, timer = null, hoverBox = null;
 
 
   function el(tag, attrs, text) {
@@ -189,14 +189,37 @@
     }
     needs.appendChild(actions);
   }
+  // Each question is headed by the form's own words for the field; the field is outlined in the view while you're on it.
   function questionForm(questions) {
     var form = el('form', {class: 'mt-md'});
     questions.forEach(function (q, i) {
       var box = el('fieldset', {class: 'question panel quiet'});
-      box.appendChild(el('legend', {class: 'small muted'}, q.label || 'Question'));
-      box.appendChild(el('p', {}, q.question));
+      var head = el('legend', {class: 'q-label'}, q.label || 'Question');
+      if (q.required) head.appendChild(el('span', {class: 'tag must'}, 'required'));
+      box.appendChild(head);
+      box.appendChild(el('p', {class: 'small muted'}, q.question));
+      if (q.hint) box.appendChild(el('p', {class: 'small faint'}, 'The form says: ' + q.hint));
+      var show = function () { hoverBox = q.box || null; drawTarget(hoverBox); };
+      box.addEventListener('mouseenter', show);
+      box.addEventListener('focusin', show);
+      box.addEventListener('mouseleave', function () { hoverBox = null; drawTarget(null); });
       var input;
-      if (q.kind === 'consent' || q.kind === 'checkbox' || q.kind === 'upload') {
+      if (q.kind === 'secret') {
+        box.classList.add('secret');
+        form.appendChild(box);
+        return;  // typed by you in the view: there is nothing to answer here
+      }
+      if (q.multiple && q.options && q.options.length) {
+        input = el('div', {class: 'choice-list', role: 'group'});
+        input.setAttribute('aria-label', q.label || q.question);
+        q.options.forEach(function (o) {
+          var row = el('label', {class: 'check small'});
+          var tick = el('input', {type: 'checkbox', name: 'q' + i, value: o});
+          row.appendChild(tick); row.appendChild(document.createTextNode(' ' + o));
+          input.appendChild(row);
+        });
+        box.appendChild(input);
+      } else if (q.kind === 'consent' || q.kind === 'checkbox' || q.kind === 'upload') {
         input = el('select', {name: 'q' + i});
         (q.kind === 'upload' ? [['', 'Choose…'], ['yes', 'Yes, upload my tailored CV'], ['no', 'No, leave it empty']]
           : [['', 'Choose…'], ['yes', 'Yes, tick it'], ['no', 'No, leave it unticked']])
@@ -205,12 +228,20 @@
         input = el('select', {name: 'q' + i});
         input.appendChild(el('option', {value: ''}, 'Choose…'));
         q.options.forEach(function (o) { input.appendChild(el('option', {value: o}, o)); });
+      } else if (q.kind === 'date' || q.kind === 'month') {
+        input = el('input', {type: q.kind, name: 'q' + i});
+      } else if (q.kind === 'number') {
+        input = el('input', {type: 'number', name: 'q' + i, step: 'any'});
+      } else if (q.kind === 'textarea') {
+        input = el('textarea', {name: 'q' + i, rows: '3'});
       } else {
         input = el('input', {type: 'text', name: 'q' + i});
       }
-      input.classList.add('mt-sm');
-      input.setAttribute('aria-label', q.label || q.question);
-      box.appendChild(input);
+      if (!input.parentNode) {
+        input.classList.add('mt-sm');
+        input.setAttribute('aria-label', q.label || q.question);
+        box.appendChild(input);
+      }
       if (q.kind !== 'consent' && q.kind !== 'upload') {
         var save = el('label', {class: 'check small mt-sm'});
         var tick = el('input', {type: 'checkbox', name: 's' + i}); tick.checked = true;
@@ -223,11 +254,19 @@
     form.appendChild(go);
     form.addEventListener('submit', function (e) {
       e.preventDefault();
-      var answers = questions.map(function (q, i) {
-        var save = form.elements['s' + i];
-        return {id: q.id, value: form.elements['q' + i].value, save: save ? save.checked : false};
+      var answers = [];
+      questions.forEach(function (q, i) {
+        if (q.kind === 'secret') return;
+        var save = form.elements['s' + i], value;
+        if (q.multiple && q.options && q.options.length) {
+          value = Array.prototype.filter.call(form.querySelectorAll('input[name="q' + i + '"]'), function (t) { return t.checked; })
+            .map(function (t) { return t.value; }).join('; ');
+        } else {
+          value = form.elements['q' + i].value;
+        }
+        answers.push({id: q.id, value: value, save: save ? save.checked : false, required: !!q.required});
       });
-      if (answers.some(function (a) { return !a.value; })) { flash('Answer every question first, or take over in the view.'); return; }
+      if (answers.some(function (a) { return a.required && !a.value; })) { flash('Answer the required questions first, or take over in the view.'); return; }
       go.disabled = true;
       send({action: 'answer', answers: answers});
     });
@@ -314,7 +353,7 @@
     badge.textContent = s.live && s.mode === 'paused' ? 'Click and type straight into the page' : '';  // who's driving: the bar above
     badge.hidden = !badge.textContent;
     if (s.frame >= 0 || s.status !== 'starting') refreshFrame(s.frame);
-    drawTarget(s.mode === 'agent' ? s.target : null);
+    drawTarget(s.mode === 'agent' ? s.target : hoverBox);
     renderNeeds(s.waiting);
     renderFilled(s.filled || []);
     renderSteps(s);
@@ -327,6 +366,6 @@
       .catch(function () { badge.textContent = 'Reconnecting…'; badge.hidden = false; })
       .finally(function () { timer = setTimeout(poll, state.live ? 600 : 3000); });
   }
-  window.addEventListener('resize', function () { drawTarget(state.mode === 'agent' ? state.target : null); });
+  window.addEventListener('resize', function () { drawTarget(state.mode === 'agent' ? state.target : hoverBox); });
   poll();
 })();

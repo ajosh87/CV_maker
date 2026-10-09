@@ -30,13 +30,15 @@ def user_data_dir() -> Path:
 
 
 def resolve_data_dir(explicit: Path | str | None = None) -> tuple[Path, str]:
-    """Returns (path, source) where source is one of: argument, DATA_DIR, legacy, default."""
+    """Returns (path, source) where source is one of: argument, DATA_DIR, legacy, default. The path is absolute,
+    so every file path saved under it is too: a relative one would be read from wherever the reader happens to
+    look (Flask reads relative paths from its package folder, not the folder the app started in)."""
     if explicit:
-        return Path(explicit), "argument"
+        return Path(explicit).absolute(), "argument"
     if os.environ.get("DATA_DIR"):
-        return Path(os.environ["DATA_DIR"]).expanduser(), "DATA_DIR"
+        return Path(os.environ["DATA_DIR"]).expanduser().absolute(), "DATA_DIR"
     if (LEGACY_DIR / "cv_maker.sqlite").exists():
-        return LEGACY_DIR, "legacy"
+        return LEGACY_DIR.absolute(), "legacy"
     return user_data_dir(), "default"
 
 

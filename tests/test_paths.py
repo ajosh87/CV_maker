@@ -39,7 +39,7 @@ def test_data_dir_env_wins(monkeypatch, tmp_path):
 def test_existing_legacy_folder_keeps_working(tmp_path):
     (tmp_path / "data").mkdir()
     (tmp_path / "data" / "cv_maker.sqlite").write_bytes(b"")
-    assert paths.resolve_data_dir() == (Path("data"), "legacy")
+    assert paths.resolve_data_dir() == (Path("data").absolute(), "legacy")
 
 
 def test_empty_legacy_folder_is_not_used(monkeypatch, tmp_path):

@@ -522,3 +522,22 @@ def test_delete_whole_version_removes_cv_and_letter(app):
     after = app.store.get_run(run.id)
     assert (after.output_cv_path, after.letter_path, after.status) == ("", "", "needs_answers")
     assert client.post(f"/runs/{run.id}/versions/9/delete").status_code == 404
+
+
+def test_downloads_work_with_a_relative_data_folder(tmp_path, monkeypatch):
+    """The older ./data folder: file paths saved relative to where the app started must still download (Flask
+    reads relative paths from its own package folder, which is not where the files are)."""
+    monkeypatch.chdir(tmp_path)
+    app = create_app(data_dir="data", model_factory=FakeModel, fetcher=fake_fetch, sync_jobs=True)
+    client = app.test_client()
+    run = _ready_job(app, client)
+    doc = next(d for d in app.store.list_documents(run.id) if d.kind == "cv")
+    assert Path(doc.path).is_absolute()  # saved from now on with the full path
+    assert client.get(f"/documents/{doc.id}/download").status_code == 200
+
+    doc.path = str(Path(doc.path).relative_to(tmp_path))  # as an earlier version saved it: data/output/cv_….docx
+    with app.store._connect() as conn:
+        conn.execute("UPDATE documents SET data = json_set(data, '$.path', ?) WHERE id = ?", (doc.path, doc.id))
+    assert not Path(app.store.get_document(doc.id).path).is_absolute()
+    res = client.get(f"/documents/{doc.id}/download")
+    assert res.status_code == 200 and res.data[:2] == b"PK"

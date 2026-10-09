@@ -9,6 +9,7 @@ import queue
 import re
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -28,6 +29,8 @@ logger = logging.getLogger("cv_maker.apply")
 VIEWPORT = {"width": 1280, "height": 860}
 MAX_STEPS = 80  # page reads per application before handing back to you
 MAX_SAME_PAGE = 3  # reads of an unchanged page before asking for help
+EMPTY_READS = 4  # a page with nothing on it yet (single-page sites render late) is read again this often
+HIDDEN = "•••••• (typed by you, never kept)"
 PAUSED = "You're in control: use the view like a normal browser. Press Resume when the assistant should carry on."
 # Human pace: a short pause after each field and after each page (the politeness level in Settings sets them).
 
@@ -70,6 +73,8 @@ class ApplySession(threading.Thread):
         self._secrets: list = []
         self._signed_in: dict[str, int] = {}  # site -> sign-ins tried with your saved account (never loops)
         self._last_watch = 0.0
+        self._answers: dict[str, str] = dict(application.answers or {})  # your answers here, by the form's question
+        self._not_kept: dict[str, dict] = {}  # question -> {"why", "tried", "options"}: what a site wouldn't keep
 
     # ---- talking to the web app (any thread) ----
 
@@ -120,6 +125,8 @@ class ApplySession(threading.Thread):
         application = self.store.get_application(self.app_id)
         waiting = (application.waiting or {}) if application else {}
         kind, site = waiting.get("kind"), planner.site_of(self.page.url)
+        if not _web(self.page.url):
+            return  # a tab that is still opening (about:blank): wait for where it's going
         if kind == "site" and waiting.get("linkedin") and site and not site.endswith("linkedin.com"):
             self._allow(site, "you opened it from LinkedIn's Apply")
             return self._carry_on()
@@ -282,8 +289,16 @@ class ApplySession(threading.Thread):
                 self._errors = 0
                 self._wait_for_you("stuck", "The assistant keeps getting interrupted on this page. Have a look, then press Resume.")
 
+    def _details_now(self) -> dict:
+        """Your saved details, with the answers you gave during this application first."""
+        mine = [{"question": q, "answer": a} for q, a in self._answers.items()]
+        return {**self._details, "custom": mine + list(self._details.get("custom") or [])}
+
     def _step(self) -> None:
         if self._interrupted():
+            return
+        if not _web(self.page.url):  # a new tab still opening (LinkedIn's Apply opens one at about:blank first)
+            self.page.wait_for_timeout(500)
             return
         self._steps += 1
         if self._steps > MAX_STEPS:
@@ -305,6 +320,11 @@ class ApplySession(threading.Thread):
                 return self._wait_for_you("site", f"The application continued on {site}. Let the assistant fill in forms there?",
                                           site=site, allow=True)
         info = self._read()
+        for _ in range(EMPTY_READS):  # nothing on the page yet: single-page sites render a moment after loading
+            if info["fields"] or info["buttons"]:
+                break
+            self.page.wait_for_timeout(1200)
+            info = self._read()
         if self._submit_clicked and planner.confirmed(info):
             return self._done("assistant")
         banner = planner.cookie_banner(info)
@@ -331,13 +351,16 @@ class ApplySession(threading.Thread):
 
         docs = self.documents()
         files = docs or {"cv": "", "letter": ""}  # until the CV exists, everything but the uploads
-        actions, _ = planner.by_rule(info, self._details, files)
+        pg.probe_options(self.page, info)  # dropdowns that only show their options when opened
+        details = self._details_now()
+        actions, _ = planner.by_rule(info, details, files)
         missed_ids, missed_labels = set(), set()  # fields that couldn't be filled: asked about below, never skipped
         if actions:
             missed_labels = {f.get("label") or f["id"] for f in self._act(actions, info)}  # ids change on the next read
             if self._interrupted():
                 return
             info = self._read()
+            pg.probe_options(self.page, info)
         pending = planner.pending_documents(info)
         letter_needed = pending["letter"] is not None and pending["letter"].get("required")
         if letter_needed and docs is None:
@@ -347,10 +370,14 @@ class ApplySession(threading.Thread):
                                                 "one now (it adds a new version with a letter), or attach your own in the view.")
         if docs is None and (pending["cv"] is not None or letter_needed):
             return self._wait_for_documents()
-        rule_actions, questions = planner.by_rule(info, self._details, files)
+        rule_actions, questions = planner.by_rule(info, details, files)
         fields = planner.for_llm(info, handled={a.id for a in rule_actions})
         navigation = self._navigation_by_rule(info)
         plan = self._ask_llm(info, fields) if fields or navigation is None else planner.Plan(*navigation)
+        if navigation is not None and not plan.actions and plan.next in ("wait", "done"):
+            # Nothing for the model to fill (only optional fields left): take the page's one obvious way on. A required
+            # field still empty is asked about below, before anything is clicked.
+            plan.next, plan.next_id = navigation[2], navigation[3]
         if self._interrupted():
             return
         missed_ids = {f["id"] for f in self._act(plan.actions, info)}
@@ -358,11 +385,20 @@ class ApplySession(threading.Thread):
             return
         questions += plan.ask
         asked = {q["id"] for q in questions}
-        questions += [planner.ask_failed(f) for f in info["fields"] if not f.get("filled") and f["id"] not in asked
-                      and (f["id"] in missed_ids or (f.get("label") or f["id"]) in missed_labels)]
-        # Never press on with a required field still empty: whatever the LLM thinks, ask instead.
+        for f in info["fields"]:
+            if f.get("filled") or f["id"] in asked or not (f["id"] in missed_ids or (f.get("label") or f["id"]) in missed_labels):
+                continue
+            lost = self._not_kept.get(planner.norm_label(f.get("label", ""))) or {}
+            question = planner.ask_failed(f, lost.get("why", ""), lost.get("tried", ""))
+            if lost.get("options") and not question["options"]:
+                question["options"] = lost["options"][:200]  # what the site offered when it was opened
+            questions.append(question)
+        # Never press on with a required field still empty: whatever the LLM thinks, ask instead. That includes the
+        # ones only you may type (passwords, codes, ID numbers): you're told to type them in the view.
         decided = {a.id for a in plan.actions} | {q["id"] for q in questions}
         questions += [planner.ask_required(f) for f in fields if f.get("required") and f["id"] not in decided]
+        questions += [planner.ask_secret(f) for f in info["fields"] if planner.is_secret(f) and f.get("required")
+                      and not f.get("filled") and f["id"] not in decided and f.get("kind") != "password"]
         if questions:
             return self._wait_for_you("question", "A few questions need your answer.", questions=questions)
         if not plan.actions and plan.next in ("wait", "done"):
@@ -395,7 +431,7 @@ class ApplySession(threading.Thread):
         model = self.get_model()
         if isinstance(model, PrivateModel):
             model = model.with_extra(self._secrets)
-        prompt = planner.build_prompt(info, fields, _prompt_profile(_to_plain(profile)) if profile else "{}", self._details,
+        prompt = planner.build_prompt(info, fields, _prompt_profile(_to_plain(profile)) if profile else "{}", self._details_now(),
                                       self.job_label)
         data = complete_json(model, prompt)
         allowed = allowed_facts_text(profile, self.job_context) if profile else ""
@@ -413,20 +449,31 @@ class ApplySession(threading.Thread):
             if self._interrupted():
                 break
             field = fields.get(action.id)
+            if field is not None and action.op != "click":
+                action, field = self._still_there(action, field)
             self.target = (field or {}).get("box")
             what = action.label or "a field"
+            secret = bool(field and planner.is_secret(field))
             try:
                 pg.perform(self.page, action, field)
+            except pg.NotKept as exc:
+                feed.emit("warn", f"! “{what[:60]}” didn't take the answer ({exc}); you'll be asked about it")
+                self._not_kept[planner.norm_label(what)] = {"why": str(exc), "tried": "" if secret else action.value,
+                                                            "options": exc.options}
+                if field is not None:
+                    failed.append(field)
+                continue
             except Exception as exc:
                 feed.emit("warn", f"! couldn't fill “{what[:60]}” ({type(exc).__name__}); you'll be asked about it")
                 if field is not None:
                     failed.append(field)
                 continue
-            shown = self._shown(action.shown or action.value)
+            self._not_kept.pop(planner.norm_label(what), None)
+            shown = HIDDEN if secret else self._shown(action.shown or action.value)
             feed.emit("apply", f"{what[:60]} ← {shown[:80]}" + (" · by rule" if action.source == "rule" else ""))
             self.page.wait_for_timeout(polite.level()["field_pause_ms"])
-            filled.append({"page": info.get("title") or "", "label": what, "value": action.value if action.op != "upload"
-                           else action.shown, "source": action.source})
+            value = HIDDEN if secret else action.value if action.op != "upload" else action.shown
+            filled.append({"page": info.get("title") or "", "label": what, "value": value, "source": action.source})
             self._snap(force=True)
         self.target = None
         if filled:
@@ -438,6 +485,21 @@ class ApplySession(threading.Thread):
                     application.filled = list(latest.values())[-300:]
                     self.store.update_application(application)
         return failed
+
+    def _still_there(self, action, field: dict):
+        """Sites that re-render their form on every change drop the ids the page was read with: then read it again
+        and find the same field by its question, so the next answer in a batch still lands."""
+        try:
+            if pg.locate(self.page, action.id).count():
+                return action, field
+            fresh = pg.observe(self.page)
+        except Exception:
+            return action, field
+        self.last_observation = fresh
+        found = planner.find_field({"id": action.id, "label": field.get("label", ""), "kind": field.get("kind")}, fresh["fields"])
+        if found is None:
+            return action, field
+        return replace(action, id=found["id"]), found
 
     def _move_on(self, plan: planner.Plan, info: dict) -> None:
         buttons = {b["id"]: b for b in info["buttons"]}
@@ -498,9 +560,9 @@ class ApplySession(threading.Thread):
             return self._wait_for_you("account", f"{site} wants you to sign in, and its form wasn't recognised. Sign in in "
                                                  "the view, then press Resume.", site=site, creating=False, saved=True, keychain="")
         for f in users[:1]:
-            pg.perform(self.page, planner.Action("fill", f["id"], saved["email"]), f)
+            pg.perform(self.page, planner.Action("fill", f["id"], saved["email"], source="account"), f)
         for f in passwords[:1]:
-            pg.perform(self.page, planner.Action("fill", f["id"], saved["password"]), f)
+            pg.perform(self.page, planner.Action("fill", f["id"], saved["password"], source="account"), f)
         button = next((b for b in info["buttons"] if planner.SIGN_IN_BUTTON.fullmatch(b["text"].strip())), None)
         feed.emit("apply", f"signing in to {site} with your saved account (password from "
                            f"{accounts.keychain_name() if accounts.can_store() else 'your password store'})")
@@ -531,9 +593,9 @@ class ApplySession(threading.Thread):
             accounts.remember_account(self.store, key, email, stored)
             self.new_password = "" if stored else password
         for f in emails:
-            pg.perform(self.page, planner.Action("fill", f["id"], email), f)
+            pg.perform(self.page, planner.Action("fill", f["id"], email, source="account"), f)
         for f in passwords:
-            pg.perform(self.page, planner.Action("fill", f["id"], password), f)
+            pg.perform(self.page, planner.Action("fill", f["id"], password, source="account"), f)
         where = accounts.keychain_name() if accounts.can_store() else "nowhere: copy it now"
         feed.emit("apply", f"filled the {'sign-in' if use_saved else 'sign-up'} form · password {'from' if use_saved else 'saved to'} {where}")
         self._snap(force=True)
@@ -621,32 +683,49 @@ class ApplySession(threading.Thread):
         self._save(current_url=page.url)  # so the address above the view follows what you do
 
     def _answer(self, answers: list) -> None:
-        fields = {f["id"]: f for f in (self.last_observation or {}).get("fields", [])}
+        """Your answers to the assistant's questions. The page is read again first and each answer finds its field by
+        the question it was about, since the site may have re-rendered the form (new ids) in the meantime. Each answer
+        is also kept for this application, so a field that reappears later is filled by rule instead of asked again."""
+        application = self.store.get_application(self.app_id)
+        asked = {q["id"]: q for q in ((application.waiting or {}).get("questions") or [])} if application else {}
+        info = self._read() if self.page is not None else (self.last_observation or {"fields": []})
         actions = []
         for item in answers:
-            field, value = fields.get(str(item.get("id"))), str(item.get("value") or "").strip()
-            if field is None or not value:
+            question = asked.get(str(item.get("id"))) or {"id": str(item.get("id")), "label": ""}
+            value = str(item.get("value") or "").strip()
+            field = planner.find_field(question, info["fields"])
+            if question.get("kind") == "secret" or (field is not None and planner.is_secret(field)):
+                continue  # typed by you in the view; never taken here
+            if not value:
                 continue
+            label = (field or {}).get("label") or question.get("label", "")
+            if field is not None and field.get("kind") not in ("file", "checkbox") and planner.norm_label(label):
+                self._answers[planner.norm_label(label)] = value  # this application only, unless you tick "save"
+            if field is None:
+                continue  # not on the page now: filled by rule when it appears
             if field.get("kind") == "file":
                 docs = self.documents()
                 if value.casefold() in ("yes", "true", "on") and docs:
-                    actions.append(planner.Action("upload", field["id"], docs["cv"], field.get("label", ""), "you",
-                                                  "your tailored CV"))
+                    actions.append(planner.Action("upload", field["id"], docs["cv"], label, "you", "your tailored CV"))
                 continue
             if field.get("kind") == "checkbox":
                 actions.append(planner.Action("check" if value.casefold() in ("yes", "true", "on") else "uncheck",
-                                              field["id"], "", field.get("label", ""), "you", "ticked by you"))
+                                              field["id"], "", label, "you", "ticked by you"))
+            elif field.get("kind") in planner.MANY_KINDS:
+                picked = planner.pick_many(value, field.get("options") or []) or pg.split_choices(value)
+                actions.append(planner.Action("choose", field["id"], "; ".join(picked), label, "you", "; ".join(picked)))
             elif field.get("kind") in planner.CHOICE_KINDS:
                 option = planner.pick_option(value, field.get("options") or []) or value
-                actions.append(planner.Action("choose", field["id"], option, field.get("label", ""), "you", option))
+                actions.append(planner.Action("choose", field["id"], option, label, "you", option))
             else:
-                actions.append(planner.Action("fill", field["id"], value, field.get("label", ""), "you", value))
-            if item.get("save") and field.get("label"):
-                app_details.remember_answer(self.store, field["label"], value)
+                actions.append(planner.Action("fill", field["id"], value, label, "you", value))
+            if item.get("save") and label:
+                app_details.remember_answer(self.store, label, value)
+        self._save(answers=dict(self._answers))
         self._details = app_details.load(self.store)
         self._secrets = app_details.secrets(self._details)
         feed.emit("user", f"✓ you answered {len(actions)} question{'s' if len(actions) != 1 else ''}")
-        self._act(actions, self.last_observation or {"fields": []})
+        self._act(actions, info)
         self._carry_on()
 
     def _approve_submit(self) -> None:
@@ -668,6 +747,10 @@ class ApplySession(threading.Thread):
         self._save(status="submitted", waiting={}, submitted_at=datetime.now(timezone.utc).isoformat(), submitted_by=by)
         feed.emit("ok", "✓ application submitted" + (" (marked by you)" if by == "you" else ""))
         self.stop_requested.set()
+
+
+def _web(url: str) -> bool:
+    return (url or "").startswith(("http://", "https://"))
 
 
 class Sessions:
