@@ -263,9 +263,10 @@ def test_every_request_is_masked_recorded_and_signed_locally(tmp_path):
     run = app.store.get_run(run.id)
     assert run.status == "ready" and run.company == "Acme"
 
-    reading_job, writing_cv, writing_letter, prep_notes = RecordingModel.prompts[1:]
+    reading_job, planning_cv, writing_cv, writing_letter, prep_notes = RecordingModel.prompts[1:]
     assert "jane@acme.example" not in reading_job and "555 0100" not in reading_job and "Acme" not in reading_job
-    for prompt in (writing_cv, writing_letter, prep_notes):
+    assert planning_cv.startswith("You are planning how to tailor a CV")
+    for prompt in (planning_cv, writing_cv, writing_letter, prep_notes):
         assert not [p for p in ["Ada", "Lovelace", "ada@example.com", "7946", "github.com/ada", "London"] if p in prompt]
         assert "Built Python APIs" in prompt  # the career facts the LLM needs are still there
     assert prep_notes.startswith("You are helping a candidate prepare for interviews")
@@ -273,7 +274,8 @@ def test_every_request_is_masked_recorded_and_signed_locally(tmp_path):
     assert letter[0] == "Ada Lovelace" and letter[-1] == "Kind regards,\nAda Lovelace"
 
     page = client.get("/settings/sent").data.decode()
-    assert page.count('class="version sent-call"') == 5 and "Writing interview prep notes" in page
+    assert page.count('class="version sent-call"') == 6 and "Writing interview prep notes" in page
+    assert "Planning the CV for this job" in page
     assert "Reading your CV" in page and "Writing a cover letter" in page and '<mark class="ph">' in page
     assert "Hidden: name, email, phone number, link, address." in page
     client.post("/settings/sent/clear")

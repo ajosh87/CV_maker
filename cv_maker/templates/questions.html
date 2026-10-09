@@ -38,12 +38,16 @@
           {% set ns.optional_open = true %}
           <details class="acc mt-md" data-key="optional-questions" {{ 'open' if previous }}>
             <summary>Optional: your level for skills your profile already shows <span class="count">{{ run.questions|selectattr('optional')|list|length }}</span></summary>
-            <div class="acc-body"><p class="small muted" style="margin-bottom: 10px;">These are in your profile, but with little to show for them. A level only sharpens how the CV words them; skipping changes nothing.</p>
+            <div class="acc-body"><p class="small muted" style="margin-bottom: 10px;">Your profile shows these, but thinly or in other words. A level only sharpens how the CV words them; skipping changes nothing.</p>
         {% endif %}
         <fieldset class="panel question" data-q="{{ i }}">
           <legend class="sr-only">{{ q.prompt }}</legend>
           <p aria-hidden="true" class="q-text">{{ q.prompt }}
             <span class="tag {{ 'must' if q.required else 'nice' }}">{{ 'must-have' if q.required else 'nice to have' }}</span></p>
+          {% if q.need or (q.why and q.hint) %}
+            <p class="small muted q-why">{% if q.need %}<span class="faint">The job:</span> {{ q.need }}{% endif %}
+              {% if q.hint and q.why %}{{ ' · ' if q.need }}<span class="faint">Your CV:</span> {{ q.why }}{% endif %}</p>
+          {% endif %}
           <div class="choice levels mt-sm">
             {% for value, label in [('none', 'No experience'), ('beginner', 'Beginner'), ('intermediate', 'Intermediate'), ('expert', 'Expert'), ('skip', 'Skip')] %}
               <label><input type="radio" name="answer_{{ i }}" value="{{ value }}" {% if choice == value %}checked{% endif %}>{{ label }}</label>
@@ -51,7 +55,7 @@
           </div>
           <div class="detail mt-sm">
             <label for="detail_{{ i }}">Where or how? <span class="faint">Optional. Your CV can use it as a confirmed fact.</span></label>
-            <input type="text" id="detail_{{ i }}" name="detail_{{ i }}" value="{{ prev.get('detail', '') }}" maxlength="600" placeholder="e.g. Ran our production clusters at Northwind, 2022–2024">
+            <input type="text" id="detail_{{ i }}" name="detail_{{ i }}" value="{{ prev.get('detail', '') }}" maxlength="600" placeholder="{{ q.hint or 'e.g. Ran our production clusters at Northwind, 2022–2024' }}">
           </div>
         </fieldset>
         {% if loop.last and ns.optional_open %}</div></details>{% endif %}

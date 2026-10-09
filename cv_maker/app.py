@@ -40,7 +40,7 @@ from cv_maker.profile.extract_text import SUPPORTED_SUFFIXES, UnreadableCvError,
 from cv_maker.security import install_local_only_guard
 from cv_maker.settings import (SETTING_KEYS, automation_settings, effective_settings, get_secret_key, llm_limits,
                                save_automation, save_settings, save_tavily_key, tavily_key)
-from cv_maker.store import Store
+from cv_maker.store import Store, profile_signature
 from cv_maker.tasks import Runner, Tasks
 
 logger = logging.getLogger("cv_maker")
@@ -181,10 +181,10 @@ def create_app(data_dir: Path | None = None, *, model_factory=None, fetcher=None
     if scanner is _REAL:
         scanner = None if fetcher is not None else (lambda url, details: scout.look(url, details) if engine_ready() else None)
     if researcher is _REAL:
-        def researcher(company, depth, job_url, force):
+        def researcher(company, depth, job_url, force, context=None):
             sources = research.chosen_sources(automation_settings(data_dir)["RESEARCH_SOURCES"])
             return research.research(company, depth=depth, sources=sources, store=store, get_model=get_model,
-                                     job_url=job_url, force=force, tavily_key=tavily_key(data_dir)[0])
+                                     job_url=job_url, force=force, tavily_key=tavily_key(data_dir)[0], context=context)
         researcher = None if fetcher is not None else researcher
     polite.configure(lambda: automation_settings(data_dir)["POLITENESS"])
 
@@ -353,7 +353,7 @@ def create_app(data_dir: Path | None = None, *, model_factory=None, fetcher=None
     def render_profile(status: int = 200):
         saved = store.get_profile()
         return render_template("profile.html", upload=current_upload(), profile=saved,
-                               uploads=store.list_uploads(), extra_lists=EXTRA_LISTS), status
+                               uploads=store.list_uploads(), extra_lists=EXTRA_LISTS, stale=stale_runs()), status
 
     @app.route("/", methods=["POST"], endpoint="upload_root")
     @app.route("/profile/upload", methods=["POST"])
@@ -455,7 +455,10 @@ def create_app(data_dir: Path | None = None, *, model_factory=None, fetcher=None
                                        extra_lists=EXTRA_LISTS, source=latest_source()), 400
             with store.locked():  # don't overwrite a confirmation a running job saved meanwhile
                 store.save_profile(profile_from_form(request.form, store.get_profile()))
-            flash("Profile saved. New CVs will use these facts; existing versions are unchanged.")
+            waiting = len(stale_runs())
+            flash("Profile saved." + (f" {waiting} job{'s were' if waiting != 1 else ' was'} written from your earlier profile: "
+                                      "write new versions from the Profile page or each job." if waiting else
+                                      " New CVs will use these facts; existing versions are unchanged."))
             return redirect(url_for("profile"))
         return render_template("profile_edit.html", profile=saved, links_text=links_text(saved.links) if saved else "",
                                extra_lists=EXTRA_LISTS, source=latest_source())
@@ -630,7 +633,8 @@ def create_app(data_dir: Path | None = None, *, model_factory=None, fetcher=None
         """Each requirement with its evidence, scored against your profile as it is now, strongest first."""
         profile_now = store.get_profile()
         if run.requirements and profile_now is not None:
-            result = match_profile(profile_now, JobRequirements.from_dict(run.requirements), levels_of(answers_from_dicts(run.answers)))
+            result = match_profile(profile_now, JobRequirements.from_dict(run.requirements), levels_of(answers_from_dicts(run.answers)),
+                                   run.assessment)
             return ranked([g.to_dict() for g in result.gaps])
         return ranked([{"strength": {"covered": "strong", "partial": "partial"}.get(g.get("status"), "none"), "score": 0, "found": [],
                         "required": True, **g} for g in run.gaps or []])
@@ -641,7 +645,8 @@ def create_app(data_dir: Path | None = None, *, model_factory=None, fetcher=None
         for d in store.list_documents(run.id):
             entry = versions.setdefault(d.version, {"version": d.version, "created_at": d.created_at, "cv": None, "letter": None, "yes": [],
                                                     "draft": {}, "ats": None, "changes": [], "rewrites": [], "letter_text": "", "model": "",
-                                                    "improved_from": None, "improve_items": []})
+                                                    "improved_from": None, "improve_items": [], "tailoring": {},
+                                                    "profile_sig": ""})
             entry[d.kind] = d
             meta = d.meta or {}
             check = meta.get("fact_check") or {}
@@ -650,7 +655,8 @@ def create_app(data_dir: Path | None = None, *, model_factory=None, fetcher=None
                 entry["yes"] = [a.term for a in answers_from_dicts(meta.get("answers", [])) if a.is_yes]
                 entry.update(draft=meta.get("draft") or {}, ats=meta.get("ats") or None, model=meta.get("model", ""),
                              rewrites=check.get("rewrites") or [], improved_from=meta.get("improved_from"),
-                             improve_items=(meta.get("improve") or {}).get("items") or [])
+                             improve_items=(meta.get("improve") or {}).get("items") or [],
+                             tailoring=meta.get("tailoring") or {}, profile_sig=meta.get("profile_sig", ""))
             else:
                 entry["letter_text"] = meta.get("text", "")
         for entry in versions.values():  # versions written before the ATS check: checked now, against the same posting
@@ -664,6 +670,20 @@ def create_app(data_dir: Path | None = None, *, model_factory=None, fetcher=None
             entry["compare"] = improve.compare(base["ats"], entry["ats"]) if base and base["ats"] and entry["ats"] else {}
             entry["outcomes"] = improve.outcomes(entry["improve_items"], entry["ats"]) if entry["improve_items"] else []
         return sorted(versions.values(), key=lambda v: v["version"], reverse=True)
+
+    def written_before_change(run: JobRun, profile_sig: str | None = None) -> int | None:
+        """The latest version's number when it was written from an older profile than yours now (else None).
+        Versions written before this was recorded say nothing either way."""
+        if run.status != "ready" or run.archived:
+            return None
+        latest = max((d for d in store.list_documents(run.id) if d.kind == "cv"), key=lambda d: d.version, default=None)
+        sig = (latest.meta or {}).get("profile_sig", "") if latest else ""
+        now = profile_sig if profile_sig is not None else profile_signature(store.get_profile())
+        return latest.version if sig and now and sig != now else None
+
+    def stale_runs() -> list[tuple[JobRun, int]]:
+        now = profile_signature(store.get_profile())
+        return [(r, v) for r in store.list_runs() if (v := written_before_change(r, now)) is not None]
 
     def job_states(run: JobRun, versions: list[dict], gaps: list[dict], applications: list) -> dict:
         found = store.get_research(research.company_key(run.company)) if run.company else None
@@ -710,6 +730,8 @@ def create_app(data_dir: Path | None = None, *, model_factory=None, fetcher=None
             busy=tasks.busy(run.id),
             saved_sites={a["site"] for a in apply_accounts.list_accounts(store) if a.get("in_keychain")},
             linkedin_offsite=scout.linkedin_offsite(run),
+            stale_version=written_before_change(run),
+            next_version=store.next_version(run.id),
         )
 
     @app.route("/runs/<run_id>/peek")
@@ -743,6 +765,31 @@ def create_app(data_dir: Path | None = None, *, model_factory=None, fetcher=None
             if jd_note:
                 note("status", jd_note)
         return redirect(safe_next(url_for("run_detail", run_id=run.id)))
+
+    @app.route("/runs/<run_id>/rewrite", methods=["POST"])
+    def rewrite(run_id: str):
+        """A new version from your profile as it is now, with the answers you already gave."""
+        run = get_run_or_404(run_id)
+        if run.status in ACTIVE_STATUSES:
+            note("status", "That job is already being processed.", error=True)
+        elif not _can_answer(run) or run.status == "needs_answers":
+            note("status", "Answer the questions first.", error=True)
+        else:
+            upcoming = tasks.queue_generate(run, alongside=False)
+            note("status", f"Writing v{upcoming} from your profile as it is now, with your earlier answers. Earlier versions are kept.")
+        return redirect(safe_next(url_for("run_detail", run_id=run.id)))
+
+    @app.route("/profile/rewrite", methods=["POST"])
+    def profile_rewrite():
+        """New versions, from your updated profile, of every job last written from an older one."""
+        started = 0
+        for run, _ in stale_runs():
+            if run.status not in ACTIVE_STATUSES:
+                tasks.queue_generate(run, alongside=False)
+                started += 1
+        flash(f"Writing new versions for {started} job{'s' if started != 1 else ''} from your updated profile. "
+              "Earlier versions are kept; the nerdbar shows each one." if started else "Every job is already up to date.")
+        return redirect(url_for("profile"))
 
     @app.route("/retry/<run_id>", methods=["POST"])
     @app.route("/runs/<run_id>/retry", methods=["POST"])

@@ -1,7 +1,13 @@
 """Per-job engine, split at the questions step into two LangGraph graphs.
 
-analyze:  load inputs -> extract requirements -> match & gaps        => run.status needs_answers
-generate: load inputs -> apply answers -> rewrite -> export -> letter => run.status ready
+analyze:  load inputs -> extract requirements -> match & gaps -> assess (a recruiter's reading, questions)
+          => run.status needs_answers
+generate: load inputs -> apply answers -> plan (what this job needs from the CV) -> rewrite -> export -> letter
+          => run.status ready
+
+Each LLM step does one kind of thinking and hands the next a checked result: the requirements, then a reading of
+each against your CV, then a plan of what to use, then the writing. A step that only sharpens the result (assess,
+plan) falls back to the counted match when it fails, so a flaky reply never stops a CV.
 
 Every input is read from the Store and every output written back to it, so nothing depends on
 in-memory checkpoints: a server restart or a failed attempt never leaves a run stuck, and Retry
@@ -16,18 +22,20 @@ from typing import Callable
 
 from langgraph.graph import END, StateGraph
 
-from cv_maker import ats
+from cv_maker import ats, tailor
 from cv_maker.events import feed
 from cv_maker.export.docx_cv import ExportError, write_cv_docx
 from cv_maker.export.letter import write_letter_docx
 from cv_maker.honesty import CvDocument, FactCheck, allowed_facts_text, contact_line, filter_cv_document, filter_text
+from cv_maker.improve import bullet_ref, role_ref
+from cv_maker.jobs.assess import assess
 from cv_maker.jobs.match import Question, match_profile
 from cv_maker.jobs.requirements import JobRequirements, extract_requirements
 from cv_maker.llm.chat import ChatModel, LLMError, ProviderUnsetError, complete_json
 from cv_maker.models import Education, Experience, JobRun
 from cv_maker.pipeline.state import TailorState
 from cv_maker.profile.answers import answers_from_dicts, apply_answers, levels_of
-from cv_maker.store import Store, _profile_from_dict
+from cv_maker.store import Store, _profile_from_dict, profile_signature
 
 logger = logging.getLogger("cv_maker.pipeline")
 
@@ -77,7 +85,8 @@ def _cv_document_from_plain(data: dict) -> CvDocument:
 def _questions(state: TailorState) -> list[Question]:
     return [
         Question(term=q.get("term", ""), prompt=q.get("prompt", ""), kind=q.get("kind", "yesno"), required=q.get("required", False),
-                 why=q.get("why", ""), score=q.get("score", 0), optional=q.get("optional", False), context=q.get("context", ""))
+                 why=q.get("why", ""), score=q.get("score", 0), optional=q.get("optional", False), context=q.get("context", ""),
+                 hint=q.get("hint", ""), need=q.get("need", ""))
         for q in state.get("questions", [])
     ]
 
@@ -152,6 +161,26 @@ def match_and_gaps_node(state: TailorState, ctx: PipelineContext) -> dict:
     }
 
 
+def assess_node(state: TailorState, ctx: PipelineContext) -> dict:
+    """Read what the keyword search couldn't settle the way a recruiter would, and ask about it specifically."""
+    profile = _profile_from_dict(state["profile"])
+    try:
+        reading = assess(ctx.get_model(), profile, state["requirements"], state.get("gaps") or [], state.get("jd_text", ""),
+                         (state.get("requirements") or {}).get("job_title", ""))
+    except (LLMError, ProviderUnsetError) as exc:
+        logger.warning("assess: run=%s kept the keyword match: %s", state["run_id"], exc)
+        feed.emit("warn", f"! couldn't read the match in depth ({friendly_error(exc)}); the questions are the standard ones")
+        return {"assessment": {}}
+    if not reading:
+        return {"assessment": {}}
+    result = match_profile(profile, JobRequirements.from_dict(state["requirements"]), assessment=reading)
+    shown = sum(1 for r in reading.values() if r["verdict"] == "shown")
+    feed.emit("step", f"read {len(reading)} requirement{'s' if len(reading) != 1 else ''} in depth: "
+                      f"{shown} shown by your CV in other words, {len(reading) - shown} to ask about")
+    return {"assessment": reading, "gaps": [g.to_dict() for g in result.gaps],
+            "questions": [q.to_dict() for q in result.questions]}
+
+
 # ---- generate -------------------------------------------------------------------------------
 
 def load_for_generation(state: TailorState, ctx: PipelineContext) -> dict:
@@ -172,6 +201,7 @@ def load_for_generation(state: TailorState, ctx: PipelineContext) -> dict:
         "job_meta": f"{run.title} {run.company}",
         "job_title": run.title or (run.requirements or {}).get("job_title", ""),
         "company": run.company,
+        "assessment": run.assessment,
         # Improving a version from its ATS check: what you picked and confirmed, for the writer to act on.
         "improve_focus": (run.improve or {}).get("focus", []) if (run.improve or {}).get("status") == "writing" else [],
     }
@@ -188,7 +218,8 @@ def apply_answers_node(state: TailorState, ctx: PipelineContext) -> dict:
             ctx.store.save_profile(updated)  # confirmed clarifications become part of the master profile
     # Anything the job asks for that the (updated) profile doesn't show as this very skill must not be claimed:
     # related isn't enough ("Docker" isn't "Kubernetes"), and "no experience" stands unless your CV shows it plainly.
-    result = match_profile(updated, JobRequirements.from_dict(state["requirements"]), levels_of(answers))
+    result = match_profile(updated, JobRequirements.from_dict(state["requirements"]), levels_of(answers),
+                           state.get("assessment"))
     declined = {a.term for a in answers if a.level == "none" or (not a.is_yes and not a.skipped)}
     banned = [g.term for g in result.gaps
               if (not g.same and not g.level) or (g.term in declined and g.strength != "strong")]
@@ -196,32 +227,95 @@ def apply_answers_node(state: TailorState, ctx: PipelineContext) -> dict:
 
 
 _REWRITE_PROMPT = """You are tailoring a CV to one job so it ranks well in applicant tracking systems (ATS) and reads well
-to a recruiter. Use ONLY facts from the candidate profile below. Never add employers, titles, dates, degrees, numbers,
-metrics, tools or skills that are not in the profile.
+to a recruiter. The CV has been planned already: write only what the plan below chose, in its order. Use ONLY facts
+from the candidate profile. Never add employers, titles, dates, degrees, numbers, metrics, tools or skills that are
+not in the profile.
 {banned_line}
 {keyword_plan}
 {level_rules}
 {improve_lines}
-Job description (use it to choose emphasis, ordering and wording):
+What this job is mostly about (lead with these):
+{needs}
+How to position the candidate: {angle}
+
+Job description (for emphasis and the posting's wording):
 <<<
 {jd}
 >>>
 
-Candidate profile (the only allowed facts):
+Bullets to write, by id, with the need each one serves (most relevant first within each role):
+{selection}
+
+Candidate profile (the only allowed facts; anything not chosen above stays off this CV):
 {profile}
+
+Before writing each bullet, check: which need does it prove, which posting keyword honestly fits it, and what is the
+result? Then write it so the reader sees that first.
 
 Return one JSON object:
 {{
-  "summary": "3 sentences grounded strictly in the profile: open with the target role ({job_title}) or the candidate's closest real title, then their strongest matching experience, using 3-5 of the keywords above in the posting's wording",
-  "experiences": [{{"company": "exactly as in the profile", "title": "exactly as in the profile",
-                    "bullets": ["one rewritten bullet per original bullet, same count and same order: start with a strong action verb, lead with the result where there is one, keep every number unchanged, and use the posting's wording for a skill when the fact is the same"]}}],
+  "summary": "3 sentences grounded strictly in the profile: open with the target role ({job_title}) or the candidate's closest real title, then the strongest evidence for the job's top needs, using 3-5 of the keywords above in the posting's wording. Nothing about work this job doesn't need.",
+  "experiences": [{{"id": "R1", "bullets": [{{"id": "R1.B2", "text": "the rewritten bullet: a strong action verb, the result first where there is one, every number unchanged, the posting's wording for a skill when the fact is the same"}}]}}],
   "skills": ["skills from the profile only, written as the posting writes them when it is the same skill, most relevant to this job first"]
 }}
-Include every experience from the profile, in the same order. Plain text only: no tables, emoji or decorative symbols."""
+Write every bullet id listed above exactly once, and no others. Plain text only: no tables, emoji or decorative symbols."""
 
 _LEVEL_RULES = ("Write each skill in skill_levels at the level the candidate gave: beginner = \"familiar with\" or "
                 "\"foundational knowledge of\"; intermediate = \"working knowledge of\" or \"hands-on experience with\"; "
                 "expert = \"expert in\" or \"deep expertise in\". Never describe a skill above its level.")
+
+
+def plan_node(state: TailorState, ctx: PipelineContext) -> dict:
+    """Decide what this job needs from the CV before writing: which roles, which bullets, which skills."""
+    profile = _profile_from_dict(state["profile"])
+    try:
+        plan = tailor.plan(ctx.get_model(), profile, state.get("requirements") or {}, state.get("gaps") or [],
+                           state.get("jd_text", ""), state.get("job_title", ""))
+    except (LLMError, ProviderUnsetError) as exc:
+        logger.warning("plan: run=%s writes every bullet instead: %s", state["run_id"], exc)
+        feed.emit("warn", f"! couldn't plan the CV for this job ({friendly_error(exc)}); writing from every bullet")
+        plan = {}
+    # Facts you just confirmed to improve a version stay on it, whatever the plan chose.
+    confirmed = [m for line in state.get("improve_focus") or [] for m in re.findall(r"“(.+?)”", line)]
+    chosen = tailor.select(profile, plan, state.get("gaps") or [], confirmed)
+    about = tailor.summary(profile, plan, chosen)
+    if about["planned"]:
+        core = sum(1 for r in about["roles"] if r["tier"] == "core")
+        feed.emit("step", f"planned: {about['kept']} of {about['of']} bullets chosen for this job · "
+                          f"{core} core role{'s' if core != 1 else ''}")
+    return {"tailoring": plan, "selection": chosen, "tailoring_summary": about}
+
+
+def _key(text) -> str:
+    return " ".join(str(text or "").split()).casefold()
+
+
+def _aligned_bullets(data: dict, profile, chosen: list[list[int]], check: FactCheck) -> list[list[str]]:
+    """The model's bullets lined up with the chosen ones: by id, or by position when it wrote plain strings in the
+    same number. A chosen bullet it skipped keeps your wording ("")."""
+    by_role = {(_key(e.company), _key(e.title)): i for i, e in enumerate(profile.experiences)}
+    written: dict[tuple[int, int], str] = {}
+    for e in data.get("experiences") or []:
+        if not isinstance(e, dict):
+            continue
+        i = role_ref(str(e.get("id") or ""), profile)
+        if i is None:
+            i = by_role.get((_key(e.get("company")), _key(e.get("title"))))
+        if i is None:
+            continue
+        bullets = e.get("bullets") or []
+        if bullets and all(isinstance(b, dict) for b in bullets):
+            for b in bullets:
+                ref = bullet_ref(str(b.get("id") or ""), profile)
+                if ref is not None and ref[0] == i and ref[1] in chosen[i]:
+                    written[ref] = str(b.get("text") or "")
+        elif bullets and len(bullets) == len(chosen[i]):
+            written.update({(i, j): str(b) for j, b in zip(chosen[i], bullets)})
+        elif bullets:
+            exp = profile.experiences[i]
+            check.add("experience", "kept original", f"{exp.title} — {exp.company}",
+                      f"the model returned {len(bullets)} bullets for {len(chosen[i])} chosen ones, so your wording was kept")
+    return [[written.get((i, j), "") for j in chosen[i]] for i in range(len(profile.experiences))]
 
 
 def rewrite_cv_node(state: TailorState, ctx: PipelineContext) -> dict:
@@ -232,25 +326,30 @@ def rewrite_cv_node(state: TailorState, ctx: PipelineContext) -> dict:
     focus = state.get("improve_focus") or []
     improve_lines = ("This version improves on an earlier one from its ATS check. The candidate asked for, and confirmed the "
                      "facts behind, these changes:\n" + "\n".join(f"- {line}" for line in focus)) if focus else ""
+    profile = _profile_from_dict(state["profile"])
+    plan = state.get("tailoring") or {}
+    chosen = state.get("selection") or tailor.select(profile, plan, state.get("gaps") or [])
+    needs = plan.get("needs") or (state.get("requirements") or {}).get("responsibilities") or []
     prompt = _REWRITE_PROMPT.format(banned_line=banned_line, keyword_plan=ats.prompt_lines(keyword_plan),
                                     level_rules=_LEVEL_RULES if has_levels else "", improve_lines=improve_lines,
+                                    needs="\n".join(f"- {n}" for n in needs) or "(see the job description)",
+                                    angle=plan.get("angle") or "from the strongest evidence for the job's needs",
+                                    selection=tailor.numbered_selection(profile, chosen, plan),
                                     job_title=ats.clean_title(state.get("job_title", ""), state.get("company", "")) or "the posting's title",
                                     jd=state.get("jd_text", "")[:15000], profile=_prompt_profile(state["profile"]))
     data = complete_json(ctx.get_model(), prompt)
+    check = FactCheck()
+    aligned = _aligned_bullets(data, profile, chosen, check)
     draft = CvDocument(
         name="",
         summary=str(data.get("summary") or ""),
-        experiences=[
-            Experience(str(e.get("company", "")), str(e.get("title", "")), "", "", None, False, [str(b) for b in e.get("bullets") or []], True)
-            for e in data.get("experiences") or []
-            if isinstance(e, dict)
-        ],
+        experiences=[Experience(e.company, e.title, "", "", None, False, aligned[i], True) for i, e in enumerate(profile.experiences)],
         education=[],
         skills=[s for s in data.get("skills") or [] if s],
     )
-    check = FactCheck()
     context = f"{state.get('job_meta', '')}\n{state.get('jd_text', '')}"
-    filtered = filter_cv_document(draft, _profile_from_dict(state["profile"]), banned, check, context)
+    filtered = filter_cv_document(draft, profile, banned, check, context, selection=chosen,
+                                  drop_skills=plan.get("skills_drop") if plan.get("relevance") else None)
     # Every keyword you have, in the posting's wording; the CV titled for the job; then the ATS check on the result.
     optimised = ats.optimise(filtered, keyword_plan, state.get("job_title", ""), state.get("company", ""))
     result = ats.check(_to_plain(optimised), keyword_plan, state.get("job_title", ""), state.get("company", ""))
@@ -327,10 +426,12 @@ ANALYZE_STEPS = [
     ("load_inputs", load_for_analysis, "Loading profile and job…"),
     ("extract_requirements", extract_requirements_node, "Reading the job's requirements…"),
     ("match_and_gaps", match_and_gaps_node, "Matching requirements against your CV…"),
+    ("assess", assess_node, "Reading the match the way a recruiter would…"),
 ]
 GENERATE_STEPS = [
     ("load_inputs", load_for_generation, "Loading answers…"),
     ("apply_answers", apply_answers_node, "Applying your answers…"),
+    ("plan", plan_node, "Choosing what this job needs from your CV…"),
     ("rewrite_cv", rewrite_cv_node, "Writing the tailored CV…"),
     ("export_docx", export_docx_node, "Saving the DOCX…"),
     ("optional_letter", optional_letter_node, "Writing the cover letter…"),
@@ -407,6 +508,7 @@ class Pipeline:
                 return self._fail(run, "analyze", out["error"])
             reqs = out["requirements"]
             run.requirements, run.gaps, run.questions, run.answers = reqs, out["gaps"], out["questions"], []
+            run.assessment = out.get("assessment") or {}
             run.title = run.title or reqs.get("job_title", "")
             run.company = run.company or reqs.get("company", "")
             run.status, run.error, run.failed_stage, run.step = "needs_answers", "", "", ""
@@ -450,6 +552,9 @@ class Pipeline:
             "draft": out.get("cv_document") or {},
             "fact_check": out.get("fact_check") or {},
             "ats": out.get("ats") or {},
+            "tailoring": out.get("tailoring_summary") or {},
+            # Which profile this was written from, so the job page can tell when your profile has changed since.
+            "profile_sig": profile_signature(_profile_from_dict(out["profile"])) if out.get("profile") else "",
         }
         improving = run.improve or {}
         if improving.get("status") == "writing":  # written to improve an earlier version: say which, and what for

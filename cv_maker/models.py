@@ -86,6 +86,8 @@ class JobRun:
     # Improving a version from its ATS check (improve.py): {"version", "items", "status": checking | ready | writing
     # | done, "plan", "focus", "error"}; once written, {"status": "done", "version": new, "base_version": old}.
     improve: dict = field(default_factory=dict)
+    # A recruiter's reading of each requirement the keyword search didn't settle (jobs/assess.py), by term.
+    assessment: dict = field(default_factory=dict)
 
 
 @dataclass

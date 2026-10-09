@@ -10,6 +10,12 @@ Depth (Settings → Company research):
 Sites whose terms or robots.txt don't allow automated reading (Glassdoor, Indeed, AmbitionBox, Blind, Levels.fyi,
 Reddit) are linked, never fetched; paste what you read there to have it summarised.
 Results are kept per company for two weeks and shared by every job at that company.
+
+A company's name is often something else too ("Prodigal" is also a film). Every search says it means the company,
+with what the job tells about it (its field, its website); Wikipedia pages about films, books, songs and the like are
+never taken for it; a Wikipedia page whose official website differs from the employer's is set aside; and the LLM
+first sorts out which findings are about this employer at all, and those that aren't are dropped before anything
+is shown.
 """
 import re
 import time
@@ -30,6 +36,7 @@ from cv_maker.llm.chat import complete_json
 PROJECT_URL = "https://github.com/ajosh87/CV_maker"
 USER_AGENT = f"CVTailor/0.1 (+{PROJECT_URL}; personal job-research tool, one person, low volume) httpx/{httpx.__version__}"
 FRESH_DAYS = 14
+VERSION = 2  # research saved by an earlier version, which didn't tell the company from its namesakes, is redone
 DEPTHS = ("off", "simple", "thorough")
 # key: (label, read automatically?, what it gives, domain for link-only sources)
 SOURCES = {
@@ -55,6 +62,11 @@ _ABOUT = re.compile(r"^(about( us)?|who we are|our (company|story)|company)$", r
 _ORGANISATION = re.compile(r"\b(company|companies|corporation|firm|organi[sz]ation|business|manufacturer|retailer|bank|group|"
                            r"provider|developer|maker|publisher|conglomerate|multinational|start-?up|agency|university|"
                            r"hospital|consultancy|insurer|airline|brand|subsidiary|enterprise)\b")
+# A Wikipedia page about one of these is never the employer, whatever else its text says.
+_NOT_A_COMPANY = re.compile(r"\b(film|movie|album|song|single|novel|book|band|television|tv series|series|episode|"
+                            r"character|video game|play|musical|soundtrack|poem|painting|comic|manga|anime|surname|"
+                            r"given name|parable|river|village|town|city|genus|species|ship|horse|racehorse|wrestler|"
+                            r"footballer|singer|rapper|actor|actress)\b", re.I)
 _ABOUT_PATH = re.compile(r"/(about|about-us|who-we-are|our-company|our-story)(/|$)", re.I)
 _WIKIDATA = {"P571": "Founded", "P159": "Headquarters", "P1128": "Employees", "P452": "Industry", "P856": "Website",
              "P169": "Chief executive", "P414": "Stock exchange"}
@@ -68,10 +80,23 @@ def chosen_sources(setting: str) -> list[str]:
     return [s for s in (setting or "").split(",") if s in SOURCES]
 
 
+def hint(context: dict | None) -> str:
+    """A few words that say which company is meant: its field, from the job (e.g. "fintech collections software")."""
+    context = context or {}
+    words = " ".join(str(context.get("domain") or "").split()[:6])
+    return words or " ".join(str(context.get("title") or "").split()[:4])
+
+
+def _query(company: str, context: dict | None, *more: str) -> str:
+    """'"Prodigal" company fintech collections ...': the name as a phrase, said to be a company, in its field."""
+    return " ".join(x for x in (f'"{company}"', "company", hint(context), *more) if x)
+
+
 def links(company: str, sources: list[str]) -> list[dict]:
     """Searches (on DuckDuckGo, which doesn't profile you) for the company on the link-only sites you picked."""
+    named = f'"{company}"'
     return [{"site": SOURCES[s][0], "about": SOURCES[s][2],
-             "url": f"https://duckduckgo.com/?q={quote_plus(f'site:{SOURCES[s][3]} {company} reviews')}"}
+             "url": "https://duckduckgo.com/?q=" + quote_plus(f"site:{SOURCES[s][3]} {named} company reviews")}
             for s in sources if not SOURCES[s][1]]
 
 
@@ -106,7 +131,13 @@ def _organisation(page: dict | None, company: str) -> bool:
     """Only a page that is plainly about this organisation: a company's name often matches something else."""
     if not page:
         return False
-    about = f"{page.get('description', '')} {page['extract'][:300]}".casefold()
+    description = page.get("description", "") or ""
+    if _NOT_A_COMPANY.search(description):  # "2019 American film": the description says what the page is about
+        return False
+    first = re.split(r"(?<=[.!?])\s", page["extract"], maxsplit=1)[0]
+    if _NOT_A_COMPANY.search(first) and not _ORGANISATION.search(first):
+        return False
+    about = f"{description} {page['extract'][:300]}".casefold()
     return company_key(company).split()[0] in page.get("title", "").casefold() and bool(_ORGANISATION.search(about))
 
 
@@ -225,12 +256,13 @@ def website_about(home: str, client, throttle) -> dict:
 
 
 def hackernews(company: str, client, throttle, years: int = 3) -> list[dict]:
-    """Recent stories about the company (older news says little about working there now)."""
+    """Recent stories about the company (older news says little about working there now). Its name must be in the
+    title as a word of its own; whether a story is about this company or a namesake is sorted out after."""
     since = int(time.time()) - years * 365 * 86400
     hits = _get(client, throttle, "https://hn.algolia.com/api/v1/search", query=company, tags="story", hitsPerPage=30,
                 numericFilters=f"created_at_i>{since}").json().get("hits", [])
-    key = company_key(company)
-    stories = [h for h in hits if key and key in (h.get("title") or "").casefold()]
+    named = re.compile(rf"(?<!\w){re.escape(' '.join(company.split()))}(?!\w)", re.I) if company.strip() else None
+    stories = [h for h in hits if named and named.search(h.get("title") or "")]
     stories.sort(key=lambda h: h.get("points") or 0, reverse=True)
     return [{"title": h["title"], "url": f"https://news.ycombinator.com/item?id={h['objectID']}", "points": h.get("points") or 0,
              "comments": h.get("num_comments") or 0, "date": (h.get("created_at") or "")[:10], "source": "Hacker News"}
@@ -295,13 +327,13 @@ def _tavily_search(client, throttle, key: str, **body) -> list[dict]:
     return found
 
 
-def tavily(company: str, key: str, client, throttle) -> dict:
+def tavily(company: str, key: str, client, throttle, context: dict | None = None) -> dict:
     """Two searches (2 credits): this year's news about the company, and what people say about working there.
-    Only the company's name is sent. Tavily reads the web with its own search index; the app itself still never
-    visits the sites it links to."""
-    news = _tavily_search(client, throttle, key, query=company, topic="news", time_range="year", max_results=5,
-                          search_depth="basic", include_published_date=True)
-    people = _tavily_search(client, throttle, key, query=f"{company} employee reviews, work culture and interview process",
+    Only the company's name and its field (from the posting) are sent, never anything about you. Tavily reads the
+    web with its own search index; the app itself still never visits the sites it links to."""
+    news = _tavily_search(client, throttle, key, query=_query(company, context), topic="news", time_range="year",
+                          max_results=5, search_depth="basic", include_published_date=True)
+    people = _tavily_search(client, throttle, key, query=_query(company, context, "employee reviews, work culture and interview process"),
                             topic="general", max_results=6, search_depth="basic")
     if not news and not people:
         return {"news": [], "people": [], "note": "found nothing about the company"}
@@ -309,42 +341,94 @@ def tavily(company: str, key: str, client, throttle) -> dict:
 
 
 _ORGANISE = """Organise what was found about {company} for a candidate preparing to apply and interview there.
-Use only the material below and name the source of every point: Wikipedia, Wikidata, Company website, Hacker News, or
-the website a news or web result came from (for example "reuters.com" or "glassdoor.com via Tavily").
 
-Wikipedia: {summary}
-Wikidata facts: {facts}
-Company website: {website}
-Hacker News discussions (title · points · comments · date): {discussions}
-News this year (title · website · date: extract): {news}
-What people say on the web (title · website: extract): {people}
+Which {company}: the employer hiring for "{title}"{field}{site}.
+What the posting says about the job:
+<<<
+{about}
+>>>
+
+Work in two steps.
+1. Sort: names are shared ("Prodigal" is also a film; many firms share a name). Go through the numbered findings
+   below and list in "unrelated" the number of every one that is NOT about this employer (another company, a film,
+   a book, a person, a word used in its everyday sense). When unsure, judge by the field, the website and the job.
+2. Organise only the findings left, and name the source of every point: Wikipedia, Wikidata, Company website,
+   Hacker News, or the website a news or web result came from (for example "reuters.com" or "glassdoor.com via Tavily").
+
+[W] Wikipedia: {summary}
+[F] Wikidata facts: {facts}
+[S] Company website: {website}
+Hacker News discussions (title · points · comments · date):
+{discussions}
+News this year (title · website · date: extract):
+{news}
+What people say on the web (title · website: extract):
+{people}
 
 Return one JSON object:
-{{"what_they_do": "2-3 sentences",
+{{"unrelated": ["W", "D2", "N1", ...],
+  "identity": "one line: which organisation this is (field, where), as the findings left show it",
+  "what_they_do": "2-3 sentences",
   "points": [{{"point": "something worth knowing", "source": "..."}}],
   "discussions": [{{"point": "what the discussions are about", "source": "Hacker News"}}],
   "what_people_say": [{{"point": "what employees or candidates report", "source": "the website it came from"}}],
   "for_interviews": ["talking points or questions this material suggests"]}}
-At most 6 points, 4 discussions, 5 what_people_say and 4 for_interviews. Leave a list empty rather than guess."""
+At most 6 points, 4 discussions, 5 what_people_say and 4 for_interviews. Leave a list empty rather than guess, and
+leave what_they_do empty if nothing left is about this employer."""
 
 
-def _organise(company: str, found: dict, model) -> dict:
+def _numbered(items: list[dict], letter: str, line) -> str:
+    return "\n".join(f"[{letter}{i}] {line(x)}" for i, x in enumerate(items, 1)) or "(none)"
+
+
+def _organise(company: str, found: dict, model, context: dict | None = None) -> dict:
+    context = context or {}
+    web = found.get("web") or {}
     data = complete_json(model, _ORGANISE.format(
-        company=company, summary=(found.get("basics") or {}).get("summary", "") or "(none)",
+        company=company, title=context.get("title") or "a role",
+        field=f", in {context['domain']}" if context.get("domain") else "",
+        site=f", website {context['site']}" if context.get("site") else "",
+        about=" ".join(str(context.get("about") or "").split())[:700] or "(not available)",
+        summary=(found.get("basics") or {}).get("summary", "") or "(none)",
         facts="; ".join(f"{k}: {v}" for k, v in found.get("facts", {}).items()) or "(none)",
         website=(found.get("website") or {}).get("text", "")[:2500] or "(none)",
-        discussions="\n".join(f"{d['title']} · {d['points']} · {d['comments']} · {d['date']}" for d in found.get("discussions", [])) or "(none)",
-        news="\n".join(f"{n['title']} · {n['site']} · {n['date']}: {n['snippet']}" for n in (found.get("web") or {}).get("news", [])) or "(none)",
-        people="\n".join(f"{n['title']} · {n['site']}: {n['snippet']}" for n in (found.get("web") or {}).get("people", [])) or "(none)",
+        discussions=_numbered(found.get("discussions") or [], "D", lambda d: f"{d['title']} · {d['points']} · {d['comments']} · {d['date']}"),
+        news=_numbered(web.get("news") or [], "N", lambda n: f"{n['title']} · {n['site']} · {n['date']}: {n['snippet']}"),
+        people=_numbered(web.get("people") or [], "P", lambda n: f"{n['title']} · {n['site']}: {n['snippet']}"),
     ))
 
     def sourced(items, limit):
         return [{"point": str(i.get("point", ""))[:300], "source": str(i.get("source", ""))[:40]}
                 for i in (items or [])[:limit] if isinstance(i, dict) and i.get("point")]
 
+    unrelated = {str(u).strip().upper().strip("[]") for u in data.get("unrelated") or [] if str(u).strip()}
     return {"what_they_do": str(data.get("what_they_do") or "")[:600], "points": sourced(data.get("points"), 6),
             "discussions": sourced(data.get("discussions"), 4), "what_people_say": sourced(data.get("what_people_say"), 5),
-            "for_interviews": [str(x)[:300] for x in (data.get("for_interviews") or [])[:4] if x]}
+            "for_interviews": [str(x)[:300] for x in (data.get("for_interviews") or [])[:4] if x],
+            "identity": " ".join(str(data.get("identity") or "").split())[:200], "unrelated": sorted(unrelated)}
+
+
+def _set_aside(found: dict, unrelated: list[str]) -> int:
+    """Drop what the sorting step found to be about a namesake. Returns how many findings went."""
+    gone = 0
+    if "W" in unrelated and found.get("basics"):
+        found["basics"], found["facts"] = None, {}
+        gone += 1
+    for key, letter in (("discussions", "D"),):
+        kept = [x for i, x in enumerate(found.get(key) or [], 1) if f"{letter}{i}" not in unrelated]
+        gone += len(found.get(key) or []) - len(kept)
+        found[key] = kept
+    web = found.get("web")
+    if web:
+        for key, letter in (("news", "N"), ("people", "P")):
+            kept = [x for i, x in enumerate(web.get(key) or [], 1) if f"{letter}{i}" not in unrelated]
+            gone += len(web.get(key) or []) - len(kept)
+            web[key] = kept
+    return gone
+
+
+def _same_site(a: str, b: str) -> bool:
+    return bool(a and b) and site_of(a).removeprefix("www.") == site_of(b).removeprefix("www.")
 
 
 # ---- the agent ----
@@ -353,12 +437,15 @@ def fresh(cached: dict | None, depth: str) -> bool:
     if not cached or not cached.get("researched_at"):
         return False
     age = datetime.now(timezone.utc) - datetime.fromisoformat(cached["researched_at"])
-    return age.days < FRESH_DAYS and DEPTHS.index(cached.get("depth", "off")) >= DEPTHS.index(depth)
+    return (cached.get("version") == VERSION and age.days < FRESH_DAYS
+            and DEPTHS.index(cached.get("depth", "off")) >= DEPTHS.index(depth))
 
 
 def research(company: str, *, depth: str, sources: list[str], store, get_model=None, job_url: str = "",
-             client: httpx.Client | None = None, throttle=sites, force: bool = False, tavily_key: str = "") -> dict | None:
-    """Research one company to `depth` from `sources`; cached per company and reused by every job there."""
+             client: httpx.Client | None = None, throttle=sites, force: bool = False, tavily_key: str = "",
+             context: dict | None = None) -> dict | None:
+    """Research one company to `depth` from `sources`; cached per company and reused by every job there.
+    `context` (from the job: "title", "domain", "about") says which company of that name is meant."""
     key = company_key(company)
     if not key or depth not in DEPTHS or depth == "off":
         return None
@@ -366,7 +453,11 @@ def research(company: str, *, depth: str, sources: list[str], store, get_model=N
     if not force and fresh(cached, depth):
         feed.emit("step", f"reusing the research on {company} from {cached['researched_at'][:10]}")
         return cached
-    found = {"company": company, "depth": depth, "researched_at": datetime.now(timezone.utc).isoformat(), "basics": None,
+    context = dict(context or {})
+    own_site = employer_site(job_url, {})
+    if own_site:
+        context.setdefault("site", own_site)
+    found = {"company": company, "version": VERSION, "depth": depth, "researched_at": datetime.now(timezone.utc).isoformat(), "basics": None,
              "facts": {}, "website": None, "discussions": [], "web": None, "summary": None, "links": links(company, sources),
              "used": [], "skipped": [{"source": SOURCES[s][0], "why": NOT_FETCHED, "linked": True}
                                      for s in sources if not SOURCES[s][1]]}
@@ -379,20 +470,32 @@ def research(company: str, *, depth: str, sources: list[str], store, get_model=N
             qid = (found["basics"] or {}).get("wikidata")
             if "wikidata" in sources and qid:
                 found["facts"] = _step("Wikidata", lambda: wikidata_facts(qid, client, throttle), found) or {}
+            listed = found["facts"].get("Website", "")
+            if own_site and listed.startswith("http") and not _same_site(own_site, listed):
+                # The job is on the employer's own site, and the Wikipedia page's company has a different one.
+                found["skipped"].append({"source": "Wikipedia", "why": f"its page on “{found['basics']['title']}” is about "
+                                         f"another organisation (website {site_of(listed)}, not {site_of(own_site)})"})
+                feed.emit("warn", f"! research: set aside Wikipedia's “{found['basics']['title']}”: a different organisation")
+                found["basics"], found["facts"] = None, {}
+                found["used"] = [u for u in found["used"] if u not in ("Wikipedia", "Wikidata")]
             home = employer_site(job_url, found["facts"])
             if "website" in sources and home:
                 found["website"] = _step("Company website", lambda: website_about(home, client, throttle), found)
             if "hackernews" in sources:
                 found["discussions"] = _step("Hacker News", lambda: hackernews(company, client, throttle), found) or []
             if "tavily" in sources and tavily_key:
-                web = _step("Tavily", lambda: tavily(company, tavily_key, client, throttle), found)
+                web = _step("Tavily", lambda: tavily(company, tavily_key, client, throttle, context), found)
                 found["web"] = web if web and not web.get("note") else None
             elif "tavily" in sources:
                 found["skipped"].append({"source": "Tavily", "why": "add your Tavily API key in Settings to use it"})
             material = (found["basics"] or found["facts"] or (found["website"] or {}).get("text") or found["discussions"]
                         or found["web"])
             if material and get_model is not None:
-                found["summary"] = _step("LLM", lambda: _organise(company, found, get_model()), found)
+                found["summary"] = _step("LLM", lambda: _organise(company, found, get_model(), context), found)
+                gone = _set_aside(found, (found["summary"] or {}).get("unrelated") or [])
+                if gone:
+                    feed.emit("step", f"research: set aside {gone} finding{'s' if gone != 1 else ''} about something else named {company}")
+                    found["set_aside"] = gone
     finally:
         if own:
             client.close()

@@ -59,6 +59,17 @@
       <div class="mt-lg">{{ upload_form() }}</div>
     {% endif %}
   {% else %}
+    {% if stale %}
+      <div class="panel stale-panel" id="stale">
+        <p><strong>{{ stale|length }} job{{ 's were' if stale|length != 1 else ' was' }} written from your earlier profile.</strong>
+          Their latest CVs don't have your changes yet.</p>
+        <ul class="dot-list small mt-xs">{% for r, v in stale %}<li><a href="{{ url_for('run_detail', run_id=r.id) }}">{{ job_label(r) }}</a> <span class="faint">· v{{ v }}</span></li>{% endfor %}</ul>
+        <form method="post" action="{{ url_for('profile_rewrite') }}" class="row mt-sm">
+          <button type="submit" data-busy-text="Starting…">Write new versions with your changes</button>
+          <span class="small faint">Uses the answers you already gave; earlier versions are kept.</span>
+        </form>
+      </div>
+    {% endif %}
     <div class="panel">
       <h2 style="margin-bottom: 4px;">{{ profile.name or 'Name not found' }}</h2>
       {% if profile.target_role %}<p>{{ profile.target_role }}</p>{% endif %}

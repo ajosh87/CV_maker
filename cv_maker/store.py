@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 import threading
@@ -17,6 +18,13 @@ def _utc_now() -> str:
 
 def _profile_to_dict(profile: Profile) -> dict:
     return asdict(profile)
+
+
+def profile_signature(profile: Profile | None) -> str:
+    """A short fingerprint of the profile's facts: equal while nothing in it has changed."""
+    if profile is None:
+        return ""
+    return hashlib.sha256(json.dumps(_profile_to_dict(profile), sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
 
 
 def _profile_from_dict(data: dict) -> Profile:

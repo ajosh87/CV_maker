@@ -42,7 +42,7 @@ the code, and nothing is shared through this repository.
   answers go to the LLM provider you choose, under that provider's terms. With **Ollama** nothing leaves
   your machine. Job links are fetched from the job site without cookies or any information about you.
   Company research sends only the company's name (to Wikipedia, Wikidata, Hacker News's search and,
-  if you add your own key, Tavily) and reads the employer's own website. There is no telemetry.
+  if you add your own key, Tavily, with the field the posting names) and reads the employer's own website. There is no telemetry.
 - **Personal details are replaced before sending:** your name, email, phone number, address and profile
   links become placeholders such as `[[NAME_1]]` before any request is sent. The app fills them back in
   on your computer when the answer arrives, so the documents are the same. Your contact details are
@@ -137,20 +137,36 @@ that matches, contact details they can read and dates on every role. So:
 - **Requirements are split into single skills.** "Python, Java, JavaScript/TypeScript, React" is five
   requirements, each matched, asked about and counted on its own. Phrases that aren't lists (CI/CD,
   UI/UX design, Research and development) stay whole.
-- **Each is matched with evidence you can trace**, never an LLM's opinion: found in your skills list
-  (also under other names: RAG is retrieval-augmented generation, K8s is Kubernetes, Azure OpenAI is one
-  of the Azure AI services, PostgreSQL relies on SQL), in a role's bullets or title (recent roles count
-  more), in certifications or projects, or in the level you gave. The job's page lists every
-  requirement strongest first with a 0–100 score, a strength (strong, partial, weak, not found) and the
-  lines that earned it.
-- **Questions ask for a level.** For anything the evidence doesn't settle: no experience, beginner,
-  intermediate or expert. The level decides the wording ("familiar with", "working knowledge of",
-  "expert in"), and the fact check removes anything that says more. Skills your profile shows only thinly
-  get optional questions that just sharpen the wording.
-- **The writing follows a keyword plan:** the posting's keywords you have, with the facts that support
-  each, and the ones you don't (never claimed). Then the app makes sure every keyword you have appears
+- **Each is matched with evidence you can trace:** found in your skills list (also under other names: RAG
+  is retrieval-augmented generation, K8s is Kubernetes, Azure OpenAI is one of the Azure AI services,
+  PostgreSQL relies on SQL), in a role's bullets or title (recent roles count more), in certifications or
+  projects, or in the level you gave. The job's page lists every requirement strongest first with a 0–100
+  score, a strength (strong, partial, weak, not found) and the lines that earned it.
+- **Then a recruiter's reading** (one LLM request) of what that search didn't settle. For each requirement it
+  works through, in order, what the job needs it for, which bullets show it or come close (cited by id, and
+  checked to exist), and a verdict: shown in other words ("deployed model services on EKS" is Kubernetes),
+  related work, or nothing. It can also see when a keyword hit means something else ("go-to-market" isn't Go).
+  Its reading adds one labelled line of evidence to the score, never the whole score, and it stops counting
+  once you edit the bullet it relied on.
+- **Questions are specific.** Each names what the job uses the skill for and the closest thing in your CV, and
+  asks for something concrete ("Your Northwind work deployed model services on EKS. Did you write the
+  manifests or run the cluster?"), with a hint of what a useful answer contains. You still answer with a
+  level (no experience, beginner, intermediate, expert), which decides the wording ("familiar with",
+  "working knowledge of", "expert in"); the fact check removes anything that says more.
+- **The CV is planned before it's written** (one LLM request): what the job is mostly about, how much each
+  role serves it (core, supporting, peripheral), which bullets prove it, which skills matter and which only
+  dilute it. Rules keep the plan honest and bounded: every role keeps its title and dates, a role gets at most
+  6, 3 or 1 bullets by how much it serves the job, your latest role keeps at least two, and the bullet that
+  shows a must-have keyword always stays. The CV tab shows the plan for each version. Bullets left out stay in
+  your profile.
+- **The writing follows the plan and a keyword plan:** only the chosen bullets, each written by id (a reply
+  that skips one keeps your wording for that bullet only), the posting's keywords you have with the facts that
+  support each, and the ones you don't (never claimed). Then the app makes sure every keyword you have appears
   in the posting's own wording (acronyms written out once, like "Retrieval-Augmented Generation (RAG)"),
   puts Skills right under the summary and titles the CV with the posting's job title.
+- **Changed your profile?** Each version remembers the profile it was written from. When yours has changed
+  since, the job's page offers *Write v2 with your changes*, and the Profile page lists every such job with
+  one button to rewrite them all, using the answers you already gave.
 - **Every version gets an ATS check** (the job's page, *ATS check* tab): a score out of 100 from must-have
   keywords (45), nice-to-haves (10), keywords in context (10), title (8), standard sections (7), contact
   details (5), dates (5), measurable results (5) and length (5), each with what to fix, plus a table of the
@@ -225,13 +241,20 @@ or per job with *Simple* / *Thorough*:
 - **Tavily, with your own key (optional):** paste a key from [tavily.com](https://tavily.com) in Settings →
   *Pace and automation* (*Test key* shows your credits without spending any). Thorough research then makes
   two Tavily searches per company (2 credits): news from the last year, and employee reviews, culture and
-  interview experiences. Only the company's name is sent. Results show on the job's page with their
+  interview experiences. Only the company's name and its field from the posting are sent, as
+  `"Prodigal" company fintech collections software`, so the search finds the employer, not a namesake. Results show on the job's page with their
   sources, and the review snippets come from Tavily's own search index, so the app still never visits the
   review sites itself. The key stays in your settings file: never in the log or the export.
 - **Linked only:** Glassdoor, Indeed, AmbitionBox, Reddit, Blind and Levels.fyi don't allow automated
   reading (in their terms or robots.txt), so the app never fetches them. You get a search link for each
   one you picked. Paste what you read there into *What people say*, and the app summarises it into pros,
   cons, interview experiences and things to ask (one LLM request).
+- **The right company, not a namesake.** A company's name is often something else too ("Prodigal" is also a
+  film). Wikipedia pages about films, books, songs, places and people are never taken for the company; a
+  Wikipedia page whose official website differs from the employer's own (from the job link) is set aside;
+  and thorough research first sorts out, with the job's title, field and website, which findings are about
+  this employer at all. The rest are dropped and the page says how many. Research saved before this is
+  marked as possibly mixed up and redone the next time it's needed.
 - When a source refuses or asks the app to slow down, research skips it and says so on the job's page.
 
 Interview prep, company research and the application check each have a switch in Settings, so you can

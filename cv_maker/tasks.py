@@ -46,6 +46,12 @@ class Runner:
             logger.exception("background task %s%s failed", getattr(fn, "__name__", fn), args)
 
 
+def research_context(run: JobRun) -> dict:
+    """What the job says about the company, so research finds this one and not a namesake. Nothing about you."""
+    reqs = run.requirements or {}
+    return {"title": run.title or reqs.get("job_title", ""), "domain": reqs.get("domain", ""), "about": (run.jd_text or "")[:800]}
+
+
 class Tasks:
     def __init__(self, store: Store, pipeline: Pipeline, get_model: Callable[[], ChatModel], fetcher: Callable, runner: Runner,
                  *, automation: Callable[[], dict] | None = None, scanner: Callable | None = None,
@@ -58,7 +64,7 @@ class Tasks:
         self.automation = automation or (lambda: {})
         self.scanner = scanner  # (url, application details) -> what the application needs; read-only
         self.on_generate = on_generate  # (run, version): start applying alongside the writing
-        self.researcher = researcher  # (company, depth, job_url, force) -> company research (research.py)
+        self.researcher = researcher  # (company, depth, job_url, force, context) -> company research (research.py)
         # Application checks drive a browser for up to a minute each: their own worker, so CVs never queue behind them.
         self.scan_runner = Runner(sync=runner.sync, max_workers=1)
         self._busy: dict[str, set[str]] = {}  # job id -> background work under way: research, prep, scan, reviews
@@ -267,7 +273,7 @@ class Tasks:
             return
         with feed.task(f"research {run_id[:6]}", f"Researching {run.company}"):
             try:
-                self.researcher(run.company, depth or self._depth(), run.job_url or "", force)
+                self.researcher(run.company, depth or self._depth(), run.job_url or "", force, research_context(run))
             except Exception as exc:
                 logger.warning("job %s: company research failed: %s", run_id[:6], exc, exc_info=True)
                 feed.emit("error", f"✗ research failed: {friendly_error(exc)}")
@@ -280,7 +286,7 @@ class Tasks:
         found = self.store.get_research(research.company_key(run.company))
         if found is None and self.researcher is not None and self._allowed("RESEARCH_AUTO"):
             try:
-                found = self.researcher(run.company, self._depth(), run.job_url or "", False)
+                found = self.researcher(run.company, self._depth(), run.job_url or "", False, research_context(run))
             except Exception as exc:
                 logger.warning("job %s: company research for the prep notes failed: %s", run.id[:6], exc, exc_info=True)
                 feed.emit("warn", f"! company research failed ({friendly_error(exc)}); writing the notes without it")
