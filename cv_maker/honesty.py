@@ -35,6 +35,7 @@ class CvDocument:
         self.extras = extras or {}
 
 
+SKILLS_SHOWN = 22  # on a CV planned for one job: enough for every relevant skill, few enough to stay focused
 _SENTENCE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9])")
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
 
@@ -175,8 +176,12 @@ def contact_line(profile: Profile) -> list[str]:
 
 
 def filter_cv_document(doc: CvDocument, allowed: Profile, banned_terms: list[str] | None = None,
-                       check: FactCheck | None = None, context_text: str = "") -> CvDocument:
-    """`context_text` (the job title, company and description) may supply names the summary uses."""
+                       check: FactCheck | None = None, context_text: str = "", selection: list[list[int]] | None = None,
+                       drop_skills: list[str] | None = None) -> CvDocument:
+    """`context_text` (the job title, company and description) may supply names the summary uses. `selection`
+    (tailor.py): which bullets of each role this CV uses, in order; `doc.experiences` then lines up with your roles
+    one for one, each with one rewrite per chosen bullet ("" keeps your wording). `drop_skills`: skills that only
+    dilute this job's CV, left off unless the model ranked them."""
     allowed_skills = {_norm(s.name): s.name for s in allowed.skills}
     skills: list[str] = []
     invented: list[str] = []
@@ -193,8 +198,13 @@ def filter_cv_document(doc: CvDocument, allowed: Profile, banned_terms: list[str
             invented.append(name)
             if check is not None:
                 check.add("skills", "removed", name, "not a skill in your profile")
-    # Skills the model left out still belong on the CV, after the ones it ranked.
-    skills += [s.name for s in allowed.skills if s.name not in skills]
+    # Skills the model left out still belong on the CV, after the ones it ranked (when the CV is planned for this
+    # job: not the ones that only dilute it, and not so many that the relevant ones get lost).
+    dropped = {_norm(d) for d in drop_skills or []}
+    rest = [s.name for s in allowed.skills if s.name not in skills and _norm(s.name) not in dropped]
+    if selection is not None and drop_skills is not None:
+        rest = rest[:max(0, SKILLS_SHOWN - len(skills))]
+    skills += rest
 
     # Never strip a term the profile itself mentions (e.g. "AWS" when the skill reads "AWS (ECS, S3)").
     corpus = profile_corpus(allowed)
@@ -208,10 +218,15 @@ def filter_cv_document(doc: CvDocument, allowed: Profile, banned_terms: list[str
     levels = {s.name: s.level for s in allowed.skills if s.level in ("beginner", "intermediate")}
     rewritten = {(_norm(e.company), _norm(e.title)): e for e in doc.experiences}
     experiences = []
-    for exp in allowed.experiences:
-        match = rewritten.get((_norm(exp.company), _norm(exp.title)))
+    for i, exp in enumerate(allowed.experiences):
         role = f"{exp.title} — {exp.company}"
-        bullets = _safe_bullets(exp.bullets, match.bullets if match else exp.bullets, banned, check, role, levels)
+        if selection is not None:
+            sources = [exp.bullets[j] for j in selection[i]] if i < len(selection) else list(exp.bullets)
+            match = doc.experiences[i] if i < len(doc.experiences) else None
+        else:
+            sources = exp.bullets
+            match = rewritten.get((_norm(exp.company), _norm(exp.title)))
+        bullets = _safe_bullets(sources, match.bullets if match else sources, banned, check, role, levels)
         experiences.append(Experience(exp.company, exp.title, exp.location, exp.start, exp.end, exp.current, bullets, exp.confirmed))
 
     summary = filter_text(doc.summary, banned, check, "summary", allowed_facts_text(allowed, context_text))

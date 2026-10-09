@@ -451,6 +451,8 @@ _PURPOSES = (
     ("Summarise these reviews", "Summarising company reviews"),
     ("Organise what was found about", "Researching the company"),
     ("You are checking which improvements to a CV", "Checking what can be improved"),
+    ("You are assessing how well a candidate's CV matches", "Reading the match in depth"),
+    ("You are planning how to tailor a CV", "Planning the CV for this job"),
     ("Your last reply was not valid JSON", "Asking again for a valid reply"),
 )
 

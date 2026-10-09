@@ -91,13 +91,13 @@ def _numberless(profile: Profile) -> list[tuple[int, int, str]]:
     return [(i, j, b) for i, e in enumerate(profile.experiences) for j, b in enumerate(e.bullets) if not re.search(r"\d", b)]
 
 
-def _role_ref(ref: str, profile: Profile) -> int | None:
+def role_ref(ref: str, profile: Profile) -> int | None:
     m = re.fullmatch(r"R(\d+)", (ref or "").strip(), re.I)
     i = int(m.group(1)) - 1 if m else -1
     return i if 0 <= i < len(profile.experiences) else None
 
 
-def _bullet_ref(ref: str, profile: Profile) -> tuple[int, int] | None:
+def bullet_ref(ref: str, profile: Profile) -> tuple[int, int] | None:
     m = re.fullmatch(r"R(\d+)\.B(\d+)", (ref or "").strip(), re.I)
     if not m:
         return None
@@ -249,7 +249,7 @@ def plan(model, profile: Profile, items: list[dict], check: dict, *, title: str 
         questions, kept = [], 0
         if item["id"] == "numbers":
             for q in asks:
-                ref = _bullet_ref(str(q.get("target", "")), profile)
+                ref = bullet_ref(str(q.get("target", "")), profile)
                 if ref is None or re.search(r"\d", profile.experiences[ref[0]].bullets[ref[1]]) or kept >= MAX_NUMBER_QUESTIONS:
                     dropped += 1
                     continue
@@ -264,13 +264,13 @@ def plan(model, profile: Profile, items: list[dict], check: dict, *, title: str 
                 reply_q = next((a for a in asks if sk.norm(str(a.get("target", ""))) == sk.norm(q["term"])), asks[0] if asks else None)
                 if reply_q:
                     q = {**q, "ask": _clean(reply_q["ask"])}
-                    role = _role_ref(str(reply_q.get("role") or ""), profile)
+                    role = role_ref(str(reply_q.get("role") or ""), profile)
                     if role is not None:
                         q["role"] = role
                 questions.append(q)
             merged["questions"] = questions
         elif item["id"] == "dates":
-            wording = {_role_ref(str(a.get("target", "")), profile): _clean(a["ask"]) for a in asks}
+            wording = {role_ref(str(a.get("target", "")), profile): _clean(a["ask"]) for a in asks}
             merged["questions"] = [{**q, "ask": wording.get(q["role"]) or q["ask"]} for q in base["questions"]]
         if merged["verdict"] == "fixable" and base["questions"] and not merged["questions"]:
             merged["questions"] = base["questions"]

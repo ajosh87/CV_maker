@@ -18,6 +18,10 @@ class TailorState(TypedDict, total=False):
     ats: dict
     job_title: str
     improve_focus: list
+    assessment: dict
+    tailoring: dict
+    selection: list
+    tailoring_summary: dict
     company: str
     letter_text: str
     letter_fact_check: dict

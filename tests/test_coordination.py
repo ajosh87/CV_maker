@@ -262,7 +262,7 @@ def test_prep_respects_the_research_switch_and_survives_failed_research(tmp_path
     run = _run(store)
     asked = []
 
-    def researcher(company, depth, job_url, force):
+    def researcher(company, depth, job_url, force, context=None):
         asked.append(company)
         raise httpx.ConnectError("offline")
 
@@ -299,7 +299,7 @@ def test_background_work_shows_on_the_job_page_and_never_runs_twice(tmp_path):
 
     started, release, calls = threading.Event(), threading.Event(), []
 
-    def researcher(company, depth, job_url, force):
+    def researcher(company, depth, job_url, force, context=None):
         calls.append(depth)
         started.set()
         release.wait(10)
@@ -473,7 +473,8 @@ def test_tavily_brings_news_and_what_people_say_with_your_own_key(tmp_path):
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         found = research.research("Acme Robotics", depth="thorough", sources=["tavily"], store=store, get_model=lambda: Model(),
                                   client=client, throttle=SiteThrottle(intervals={}, default=0), tavily_key="tvly-test-0123456789")
-    assert [b["query"] for b in sent] == ["Acme Robotics", "Acme Robotics employee reviews, work culture and interview process"]
+    assert [b["query"] for b in sent] == ['"Acme Robotics" company',
+                                         '"Acme Robotics" company employee reviews, work culture and interview process']
     assert all("Ada" not in json.dumps(b) for b in sent)  # only the company's name goes to Tavily
     assert found["web"]["news"][0]["site"] == "reuters.com" and found["web"]["people"][0]["site"] == "glassdoor.com"
     assert "Tavily" in found["used"] and "Acme opens a Leeds office" in asked[0] and "Good mentoring, slow promotions." in asked[0]
@@ -686,7 +687,7 @@ def test_the_app_checks_applications_after_analysis_and_writes_prep_after_the_cv
 
     researched = []
 
-    def researcher(company, depth, job_url, force):
+    def researcher(company, depth, job_url, force, context=None):
         researched.append((company, depth))
         found = {"company": company, "depth": depth, "researched_at": "2026-10-03T10:00:00+00:00", "facts": {"Founded": "1999"},
                  "basics": {"summary": "Acme makes anvils.", "url": "https://en.wikipedia.org/wiki/Acme", "title": "Acme"},

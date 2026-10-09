@@ -808,3 +808,16 @@ html:not(.no-js) .inline-only { display: none; }
 html.no-js .has-details { display: none; }
 .glance-row.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
 .settings-section + .settings-section { margin-top: 32px; }
+
+/* ---- a CV written from an older profile ---- */
+.stale-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 12px; border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent); border-left: 3px solid var(--accent); }
+.stale-panel { border-left: 3px solid var(--accent); }
+.tailoring { margin-bottom: 10px; }
+.mini-table { width: 100%; border-collapse: collapse; }
+.mini-table td { padding: 3px 6px 3px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+.mini-table td.num { text-align: right; white-space: nowrap; color: var(--muted); }
+.tier { font-size: 0.75rem; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); white-space: nowrap; }
+.tier-core { border-color: var(--accent); }
+.tier-peripheral { opacity: 0.7; }
+.q-why { margin: 4px 0 0; }

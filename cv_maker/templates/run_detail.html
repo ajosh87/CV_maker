@@ -68,6 +68,12 @@
       </div>
     {% endif %}
     {% if run.warning %}<p class="small warn-text mt-sm">{{ run.warning }}</p>{% endif %}
+    {% if stale_version %}
+      <form method="post" action="{{ url_for('rewrite', run_id=run.id) }}" class="stale-row mt-sm" data-inline>
+        <span class="small">Your profile has changed since v{{ stale_version }} was written.</span>
+        <button type="submit" class="sm" data-busy-text="Starting…">Write v{{ next_version }} with your changes</button>
+      </form>
+    {% endif %}
   </div>
 
   {% if run.requirements %}
@@ -244,6 +250,10 @@
         <p class="small muted"><span class="spinner" aria-hidden="true"></span> Researching {{ run.company }}… the nerdbar shows each source.</p>
       {% elif f.get('researched_at') %}
         {% set s = f.get('summary') or {} %}
+        {% if f.get('version') != 2 %}
+          <p class="sec-note warn small">This research is from before it could tell {{ run.company }} from other things of the same name, so some of it may be about something else. Run it again below.</p>
+        {% endif %}
+        {% if s.get('identity') %}<p class="small muted">{{ s.identity }}</p>{% endif %}
         {% if s.get('what_they_do') %}<p>{{ s.what_they_do }}</p>{% elif f.basics %}<p>{{ f.basics.summary|truncate(600) }}</p>{% endif %}
         {% if f.facts %}
           <dl class="facts mt-sm small">{% for k, v in f.facts.items() %}<dt>{{ k }}</dt><dd class="break">{{ v }}</dd>{% endfor %}</dl>
@@ -279,6 +289,7 @@
           {{ f.depth|capitalize }} research, {{ f.researched_at|when }}. Sources:
           {% for name, url in cited %}{% if url %}<a href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ name }} ↗</a>{% else %}{{ name }}{% endif %}{{ ' · ' if not loop.last }}{% else %}nothing found{% endfor %}.
           {% for x in f.skipped if not x.get('linked') %}{{ x.source }}: {{ x.why }}. {% endfor %}
+          {% if f.get('set_aside') %}Set aside {{ f.set_aside }} finding{{ 's' if f.set_aside != 1 }} about something else named {{ run.company }}.{% endif %}
         </p>
       {% elif research_depth == 'off' %}
         <p class="small muted">Company research is off (Settings → Pace and automation). You can still run it for this company:</p>
@@ -404,6 +415,19 @@
       <div class="tab-panel" data-tab="cv">
         {% if draft %}
           {% set rewrites = v.rewrites %}
+          {% set t = v.tailoring or {} %}
+          {% if t.get('planned') %}
+            <details class="acc tailoring" data-key="tailoring-{{ v.version }}">
+              <summary>Planned for this job: {{ t.kept }} of {{ t.of }} bullets used</summary>
+              <div class="acc-body small">
+                {% if t.angle %}<p>{{ t.angle }}</p>{% endif %}
+                {% if t.needs %}<p class="muted mt-xs">Led with what the job needs most:</p><ol class="dot-list">{% for n in t.needs %}<li>{{ n }}</li>{% endfor %}</ol>{% endif %}
+                <table class="mini-table mt-sm"><tbody>{% for r in t.roles %}
+                  <tr><td>{{ r.role }}</td><td>{% if r.tier %}<span class="tier tier-{{ r.tier }}">{{ r.tier }}</span>{% endif %}</td><td class="num">{{ r.kept }} of {{ r.of }}</td></tr>{% endfor %}</tbody></table>
+                <p class="faint mt-xs">Bullets left out stay in your profile. Every role keeps its title and dates.</p>
+              </div>
+            </details>
+          {% endif %}
           <label class="check small"><input type="checkbox" class="orig-toggle"> Show my original wording next to each rewritten bullet</label>
           {{ cv_paper(draft, rewrites) }}
         {% else %}
